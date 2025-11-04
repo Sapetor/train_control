@@ -95,8 +95,14 @@ double etha = 0.5;
 int deadband = 300;
 int lim = 10;  // Minimum PID output threshold
 double ponderado = 0;  // Weighted error for velocity-based control
+double last_distancia = 0;  // For velocity calculation
 bool flag_pid = true;
 uint32_t tiempo_inicial_pid = 0;
+
+// MQTT Connection Management
+unsigned long last_mqtt_attempt = 0;
+const unsigned long MQTT_RECONNECT_INTERVAL = 5000;  // Try reconnect every 5 seconds
+int mqtt_retry_count = 0;
 
 PID myPID(&error_distancia, &u_distancia, &rf, Kp, Ki, Kd, DIRECT);
 
@@ -116,42 +122,65 @@ double u_step;
 // =============================================================================
 void setup() {
     Serial.begin(115200);
-    Serial.println("=== Unified Train Control Firmware ===");
-    Serial.println("Supports: PID Control + Step Response");
-    
+    delay(500);  // Give serial time to initialize
+    Serial.println();
+    Serial.println("===================================");
+    Serial.println("  Unified Train Control Firmware");
+    Serial.println("  Version: 2.1 (Fixed)");
+    Serial.println("===================================");
+    Serial.println("Supports:");
+    Serial.println("  - PID Control");
+    Serial.println("  - Step Response");
+    Serial.println("===================================");
+
     // WiFi Setup
     setup_wifi();
-    
-    // MQTT Setup
+
+    // MQTT Setup (non-blocking)
     client.setServer(mqtt_server, 1883);
     client.setCallback(mqtt_callback);
-    reconnect_mqtt();
-    
+    initial_mqtt_connect();  // Try to connect, but don't block forever
+
     // Motor Setup
     setup_motor();
-    
+
     // ToF Sensor Setup
     setup_ToF();
-    
+
     // PID Setup
     myPID.SetMode(MANUAL);
     myPID.SetOutputLimits(umin, umax);
     myPID.SetSampleTime(SampleTime);
-    
-    Serial.println("Setup Complete!");
+
+    Serial.println("===================================");
+    Serial.println("✓ Setup Complete!");
+    Serial.println("===================================");
+    Serial.print("Current Mode: ");
+    Serial.println(currentExperimentMode == PID_MODE ? "PID Control" : "Step Response");
     Serial.println("Waiting for experiment start via MQTT...");
+    Serial.println();
 }
 
 // =============================================================================
 // Main Loop
 // =============================================================================
 void loop() {
-    // Maintain MQTT connection
+    // NON-BLOCKING MQTT connection maintenance
     if (!client.connected()) {
-        reconnect_mqtt();
+        unsigned long now = millis();
+        if (now - last_mqtt_attempt > MQTT_RECONNECT_INTERVAL) {
+            last_mqtt_attempt = now;
+            Serial.print("[MQTT] Attempting reconnection (attempt ");
+            Serial.print(mqtt_retry_count + 1);
+            Serial.println(")...");
+            attempt_mqtt_reconnect();  // Non-blocking single attempt
+        }
+    } else {
+        mqtt_retry_count = 0;  // Reset counter when connected
     }
+
     client.loop();
-    
+
     // Run appropriate experiment loop
     if (experimentActive) {
         if (currentExperimentMode == PID_MODE) {
@@ -189,10 +218,17 @@ void loop_pid_experiment() {
     // Read sensor
     read_ToF_sensor();
     distancia = medi;
-    
+
+    // Calculate velocity (derivative of distance)
+    double velocity = (distancia - last_distancia) * 1000.0 / SampleTime;  // cm/s
+    last_distancia = distancia;
+
     // Calculate error
     error_distancia = x_ref - distancia;
-    
+
+    // Weighted error for velocity-based control (combines position error and velocity)
+    ponderado = error_distancia - etha * velocity;
+
     // Compute PID
     myPID.Compute();
     
@@ -298,18 +334,19 @@ void loop_step_experiment() {
 
 // =============================================================================
 // MQTT Callback - Handles both PID and Step Response topics
+// CRITICAL FIX: Removed chained else-if to allow all topics to be checked
 // =============================================================================
 void mqtt_callback(char* topic, byte* payload, unsigned int length) {
     String mensaje = "";
     for (unsigned int i = 0; i < length; i++) {
         mensaje += (char)payload[i];
     }
-    
+
     String topic_str = String(topic);
     Serial.print("[MQTT] "); Serial.print(topic_str); Serial.print(" = "); Serial.println(mensaje);
-    
+
     // =========================================================================
-    // PID Control Topics
+    // PID Control Topics - Use SEPARATE IF statements, not else-if chain!
     // =========================================================================
     if (topic_str == "trenes/sync") {
         if (mensaje == "True") {
@@ -317,99 +354,114 @@ void mqtt_callback(char* topic, byte* payload, unsigned int length) {
             experimentActive = true;
             flag_pid = false;
             tiempo_inicial_pid = millis();
-            PIDMotorDirection = 1;  // FIXED: Reset to default direction when starting
-            Serial.println("[MODE] Switched to PID Control");
+            PIDMotorDirection = 1;
+            last_distancia = 0;  // Reset velocity calculation
+            Serial.println("[MODE] ✓ Switched to PID Control");
+            Serial.print("[PID] Kp="); Serial.print(Kp);
+            Serial.print(" Ki="); Serial.print(Ki);
+            Serial.print(" Kd="); Serial.print(Kd);
+            Serial.print(" Ref="); Serial.println(x_ref);
         } else {
             experimentActive = false;
-            flag_pid = true;  // Reset flag so next start initializes properly
+            flag_pid = true;
             myPID.SetMode(MANUAL);
-            u_distancia = 0;  // Reset PID output
-            error_distancia = 0;  // Reset error
+            u_distancia = 0;
+            error_distancia = 0;
             MotorSpeed = 0;
-            PIDMotorDirection = 1;  // FIXED: Reset direction when stopping!
-            MotorDirection = PIDMotorDirection;  // Update global
+            PIDMotorDirection = 1;
+            MotorDirection = PIDMotorDirection;
             SetMotorControl();
-            Serial.println("[PID] Stopped");
+            Serial.println("[PID] ✗ Stopped");
         }
     }
-    // FIXED: Only accept PID parameters when not in Step mode
-    else if (currentExperimentMode != STEP_MODE) {
-        if (topic_str == "trenes/carroD/p") {
-            Kp = mensaje.toFloat();
-            client.publish("trenes/carroD/p/status", String(Kp).c_str());
-        }
-        else if (topic_str == "trenes/carroD/i") {
-            Ki = mensaje.toFloat();
-            client.publish("trenes/carroD/i/status", String(Ki).c_str());
-        }
-        else if (topic_str == "trenes/carroD/d") {
-            Kd = mensaje.toFloat();
-            client.publish("trenes/carroD/d/status", String(Kd).c_str());
-        }
-        else if (topic_str == "trenes/ref") {
-            x_ref = mensaje.toFloat();
-            client.publish("trenes/carroD/ref/status", String(x_ref).c_str());
-        }
-        else if (topic_str == "trenes/carroD/request_params") {
-            client.publish("trenes/carroD/p/status", String(Kp).c_str());
-            client.publish("trenes/carroD/i/status", String(Ki).c_str());
-            client.publish("trenes/carroD/d/status", String(Kd).c_str());
-            client.publish("trenes/carroD/ref/status", String(x_ref).c_str());
-        }
+
+    // PID Parameters - Only update when NOT in Step mode
+    if (currentExperimentMode != STEP_MODE && topic_str == "trenes/carroD/p") {
+        Kp = mensaje.toFloat();
+        client.publish("trenes/carroD/p/status", String(Kp).c_str());
+        Serial.print("[PID] Kp updated: "); Serial.println(Kp);
     }
-    
+    if (currentExperimentMode != STEP_MODE && topic_str == "trenes/carroD/i") {
+        Ki = mensaje.toFloat();
+        client.publish("trenes/carroD/i/status", String(Ki).c_str());
+        Serial.print("[PID] Ki updated: "); Serial.println(Ki);
+    }
+    if (currentExperimentMode != STEP_MODE && topic_str == "trenes/carroD/d") {
+        Kd = mensaje.toFloat();
+        client.publish("trenes/carroD/d/status", String(Kd).c_str());
+        Serial.print("[PID] Kd updated: "); Serial.println(Kd);
+    }
+    if (currentExperimentMode != STEP_MODE && topic_str == "trenes/ref") {
+        x_ref = mensaje.toFloat();
+        client.publish("trenes/carroD/ref/status", String(x_ref).c_str());
+        Serial.print("[PID] Reference updated: "); Serial.println(x_ref);
+    }
+    if (currentExperimentMode != STEP_MODE && topic_str == "trenes/carroD/request_params") {
+        client.publish("trenes/carroD/p/status", String(Kp).c_str());
+        client.publish("trenes/carroD/i/status", String(Ki).c_str());
+        client.publish("trenes/carroD/d/status", String(Kd).c_str());
+        client.publish("trenes/carroD/ref/status", String(x_ref).c_str());
+        Serial.println("[PID] Parameters requested - sent status");
+    }
+
     // =========================================================================
-    // Step Response Topics
+    // Step Response Topics - SEPARATE IF statements for proper handling
     // =========================================================================
-    else if (topic_str == "trenes/step/sync") {
+    if (topic_str == "trenes/step/sync") {
         if (mensaje == "True" && StepTime > 0 && StepAmplitude > 0) {
             currentExperimentMode = STEP_MODE;
             experimentActive = true;
             flag_step = false;
             tiempo_inicial_step = millis();
-            // StepMotorDirection is already set by parameter update
-            Serial.println("[MODE] Switched to Step Response");
+            Serial.println("[MODE] ✓ Switched to Step Response");
+            Serial.print("[STEP] Amplitude="); Serial.print(StepAmplitude);
+            Serial.print("V Duration="); Serial.print(StepTime / 1000.0);
+            Serial.print("s Direction="); Serial.println(StepMotorDirection ? "FWD" : "REV");
         } else {
             experimentActive = false;
-            flag_step = true;  // Reset flag so next start initializes properly
+            flag_step = true;
             StepAmplitude = 0;
             StepTime = 0;
             MotorSpeed = 0;
-            StepMotorDirection = 1;  // FIXED: Reset direction when stopping!
-            MotorDirection = StepMotorDirection;  // Update global
+            StepMotorDirection = 1;
+            MotorDirection = StepMotorDirection;
             SetMotorControl();
-            Serial.println("[STEP] Stopped");
+            Serial.println("[STEP] ✗ Stopped");
         }
     }
-    // FIXED: Only accept Step parameters when not in PID mode
-    else if (currentExperimentMode != PID_MODE) {
-        if (topic_str == "trenes/step/amplitude") {
-            StepAmplitude = mensaje.toFloat();
-            StepAmplitude = constrain(StepAmplitude, 0.0, v_batt);
-            client.publish("trenes/step/amplitude/status", String(StepAmplitude, 1).c_str());
-        }
-        else if (topic_str == "trenes/step/time") {
-            float time_seconds = mensaje.toFloat();
-            StepTime = time_seconds * 1000;  // Convert to milliseconds
-            StepTime = constrain(StepTime, 0, 20000);
-            client.publish("trenes/step/time/status", String(time_seconds, 1).c_str());
-        }
-        else if (topic_str == "trenes/step/direction") {
-            StepMotorDirection = mensaje.toInt();  // FIXED: Use Step-specific direction
-            StepMotorDirection = constrain(StepMotorDirection, 0, 1);
-            client.publish("trenes/step/direction/status", String(StepMotorDirection).c_str());
-        }
-        else if (topic_str == "trenes/step/vbatt") {
-            v_batt = mensaje.toFloat();
-            v_batt = constrain(v_batt, 0.0, 8.4);
-            client.publish("trenes/step/vbatt/status", String(v_batt, 1).c_str());
-        }
-        else if (topic_str == "trenes/step/request_params") {
-            client.publish("trenes/step/amplitude/status", String(StepAmplitude, 1).c_str());
-            client.publish("trenes/step/time/status", String(StepTime / 1000.0, 1).c_str());
-            client.publish("trenes/step/direction/status", String(StepMotorDirection).c_str());
-            client.publish("trenes/step/vbatt/status", String(v_batt, 1).c_str());
-        }
+
+    // Step Parameters - Only update when NOT in PID mode
+    if (currentExperimentMode != PID_MODE && topic_str == "trenes/step/amplitude") {
+        StepAmplitude = mensaje.toFloat();
+        StepAmplitude = constrain(StepAmplitude, 0.0, v_batt);
+        client.publish("trenes/step/amplitude/status", String(StepAmplitude, 1).c_str());
+        Serial.print("[STEP] Amplitude updated: "); Serial.println(StepAmplitude);
+    }
+    if (currentExperimentMode != PID_MODE && topic_str == "trenes/step/time") {
+        float time_seconds = mensaje.toFloat();
+        StepTime = time_seconds * 1000;
+        StepTime = constrain(StepTime, 0, 20000);
+        client.publish("trenes/step/time/status", String(time_seconds, 1).c_str());
+        Serial.print("[STEP] Duration updated: "); Serial.println(time_seconds);
+    }
+    if (currentExperimentMode != PID_MODE && topic_str == "trenes/step/direction") {
+        StepMotorDirection = mensaje.toInt();
+        StepMotorDirection = constrain(StepMotorDirection, 0, 1);
+        client.publish("trenes/step/direction/status", String(StepMotorDirection).c_str());
+        Serial.print("[STEP] Direction updated: "); Serial.println(StepMotorDirection ? "FWD" : "REV");
+    }
+    if (currentExperimentMode != PID_MODE && topic_str == "trenes/step/vbatt") {
+        v_batt = mensaje.toFloat();
+        v_batt = constrain(v_batt, 0.0, 8.4);
+        client.publish("trenes/step/vbatt/status", String(v_batt, 1).c_str());
+        Serial.print("[STEP] VBatt updated: "); Serial.println(v_batt);
+    }
+    if (currentExperimentMode != PID_MODE && topic_str == "trenes/step/request_params") {
+        client.publish("trenes/step/amplitude/status", String(StepAmplitude, 1).c_str());
+        client.publish("trenes/step/time/status", String(StepTime / 1000.0, 1).c_str());
+        client.publish("trenes/step/direction/status", String(StepMotorDirection).c_str());
+        client.publish("trenes/step/vbatt/status", String(v_batt, 1).c_str());
+        Serial.println("[STEP] Parameters requested - sent status");
     }
 }
 
@@ -440,38 +492,79 @@ void setup_wifi() {
 }
 
 // =============================================================================
-// MQTT Reconnect
+// MQTT Reconnect - NON-BLOCKING VERSION
 // =============================================================================
-void reconnect_mqtt() {
-    while (!client.connected()) {
-        Serial.print("Attempting MQTT connection...");
-        
-        if (client.connect(carro.c_str())) {
-            Serial.println(" connected!");
-            
-            // Subscribe to PID topics
-            client.subscribe("trenes/sync");
-            client.subscribe("trenes/carroD/p");
-            client.subscribe("trenes/carroD/i");
-            client.subscribe("trenes/carroD/d");
-            client.subscribe("trenes/ref");
-            client.subscribe("trenes/carroD/request_params");
-            
-            // Subscribe to Step Response topics
-            client.subscribe("trenes/step/sync");
-            client.subscribe("trenes/step/amplitude");
-            client.subscribe("trenes/step/time");
-            client.subscribe("trenes/step/direction");
-            client.subscribe("trenes/step/vbatt");
-            client.subscribe("trenes/step/request_params");
-            
-            Serial.println("Subscribed to all topics (PID + Step)");
-        } else {
-            Serial.print(" failed, rc=");
-            Serial.print(client.state());
-            Serial.println(" - retrying in 5 seconds");
-            delay(5000);
+void attempt_mqtt_reconnect() {
+    // Single reconnection attempt - does NOT block!
+    if (client.connect(carro.c_str())) {
+        Serial.println("✓ MQTT connected!");
+
+        // Subscribe to PID topics
+        client.subscribe("trenes/sync");
+        client.subscribe("trenes/carroD/p");
+        client.subscribe("trenes/carroD/i");
+        client.subscribe("trenes/carroD/d");
+        client.subscribe("trenes/ref");
+        client.subscribe("trenes/carroD/request_params");
+
+        // Subscribe to Step Response topics
+        client.subscribe("trenes/step/sync");
+        client.subscribe("trenes/step/amplitude");
+        client.subscribe("trenes/step/time");
+        client.subscribe("trenes/step/direction");
+        client.subscribe("trenes/step/vbatt");
+        client.subscribe("trenes/step/request_params");
+
+        Serial.println("✓ Subscribed to all topics (PID + Step)");
+        mqtt_retry_count = 0;
+    } else {
+        mqtt_retry_count++;
+        Serial.print("✗ MQTT failed, rc=");
+        Serial.print(client.state());
+        Serial.print(" (will retry in ");
+        Serial.print(MQTT_RECONNECT_INTERVAL / 1000);
+        Serial.println("s)");
+
+        // If too many failures, provide diagnostic info
+        if (mqtt_retry_count % 5 == 0) {
+            Serial.println("[DIAGNOSTIC] MQTT connection issues:");
+            Serial.print("  - WiFi connected: "); Serial.println(WiFi.status() == WL_CONNECTED ? "YES" : "NO");
+            Serial.print("  - WiFi RSSI: "); Serial.print(WiFi.RSSI()); Serial.println(" dBm");
+            Serial.print("  - Broker IP: "); Serial.println(mqtt_server);
+            Serial.print("  - Free heap: "); Serial.print(ESP.getFreeHeap()); Serial.println(" bytes");
         }
+    }
+}
+
+// Initial MQTT connection with retry for setup phase
+void initial_mqtt_connect() {
+    int attempts = 0;
+    const int MAX_ATTEMPTS = 10;
+
+    Serial.print("Connecting to MQTT broker at ");
+    Serial.print(mqtt_server);
+    Serial.println("...");
+
+    while (!client.connected() && attempts < MAX_ATTEMPTS) {
+        Serial.print("  Attempt ");
+        Serial.print(attempts + 1);
+        Serial.print("/");
+        Serial.print(MAX_ATTEMPTS);
+        Serial.print("... ");
+
+        attempt_mqtt_reconnect();
+
+        if (!client.connected()) {
+            delay(2000);  // Wait before next attempt (only during setup)
+        }
+        attempts++;
+    }
+
+    if (client.connected()) {
+        Serial.println("✓ Initial MQTT connection successful!");
+    } else {
+        Serial.println("⚠ MQTT connection failed, will retry in background");
+        Serial.println("  UDP data will still work, but parameter control disabled");
     }
 }
 
