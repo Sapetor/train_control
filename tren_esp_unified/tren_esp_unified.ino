@@ -98,6 +98,7 @@ double ponderado = 0;  // Weighted error for velocity-based control
 double last_distancia = 0;  // For velocity calculation
 bool flag_pid = true;
 uint32_t tiempo_inicial_pid = 0;
+uint32_t last_pid_debug = 0;  // For periodic debug output
 
 // MQTT Connection Management
 unsigned long last_mqtt_attempt = 0;
@@ -203,18 +204,16 @@ void loop_pid_experiment() {
     // Sync message on first iteration
     if (flag_pid == false) {
         flag_pid = true;
+        Serial.println("===================================");
         Serial.println("[PID] Experiment started!");
+        Serial.print("[PID] Initial gains: Kp="); Serial.print(Kp);
+        Serial.print(" Ki="); Serial.print(Ki);
+        Serial.print(" Kd="); Serial.println(Kd);
+        Serial.print("[PID] Reference: "); Serial.print(x_ref); Serial.println(" cm");
+        Serial.println("===================================");
         tiempo_inicial_pid = millis();
-        
-        // Configure PID before enabling
-        myPID.SetTunings(Kp, Ki, Kd);
-        myPID.SetOutputLimits(umin, umax);
-        myPID.SetSampleTime(SampleTime);
-        
-        // Enable PID after configuration
-        myPID.SetMode(AUTOMATIC);
     }
-    
+
     // Read sensor
     read_ToF_sensor();
     distancia = medi;
@@ -229,11 +228,17 @@ void loop_pid_experiment() {
     // Weighted error for velocity-based control (combines position error and velocity)
     ponderado = error_distancia - etha * velocity;
 
+    // CRITICAL FIX: Update PID tunings EVERY loop (like original working code)
+    // This ensures MQTT parameter updates take effect immediately
+    myPID.SetTunings(Kp, Ki, Kd);
+    myPID.SetOutputLimits(umin, umax);
+    myPID.SetSampleTime(SampleTime);
+
     // Compute PID
     myPID.Compute();
-    
+
     double u = u_distancia;  // PID output
-    
+
     // Safety: No object in front (distance > 200cm)
     if (distancia > 200) {
         if (MotorSpeed < 200) {
@@ -247,44 +252,66 @@ void loop_pid_experiment() {
         delay(SampleTime);
         return;
     }
-    
-    // Normal operation with object detected
-    if (distancia < 200) {
-        myPID.SetMode(AUTOMATIC);  // Revive PID
-    }
-    
+
     // Apply control logic with deadband compensation
+    // CRITICAL FIX: Use separate IFs like original, not else-if chain
     if (u < -lim) {
         // Reverse
-        PIDMotorDirection = 0;  // FIXED: Use PID-specific direction
+        PIDMotorDirection = 0;
         MotorSpeed = int(-u + deadband);
     }
     else if (u > lim) {
         // Forward
-        PIDMotorDirection = 1;  // FIXED: Use PID-specific direction
+        PIDMotorDirection = 1;
         MotorSpeed = int(u + deadband);
     }
-    else {
-        // FIXED: Small error zone - simplified logic
-        myPID.SetMode(MANUAL);
+
+    // Small error zone - stop motor but don't disable PID yet
+    // CRITICAL FIX: Separate IF, not else block
+    if ((u >= -lim) && (u <= lim)) {
+        myPID.SetMode(MANUAL);  // Temporarily stop integrating
         MotorSpeed = 0;
-        // Keep last direction for smooth restart (don't change direction)
+        if (u > 0) PIDMotorDirection = 1;
+        else PIDMotorDirection = 0;
     }
-    
+
     // Additional stop condition when at rest
     if ((u >= -lim) && (u <= lim) && (abs(ponderado) <= 0.75)) {
         MotorSpeed = 0;
-        // Keep last direction (don't change)
+        if (u < 0) PIDMotorDirection = 1;
+        else PIDMotorDirection = 0;
     }
-    
+
+    // CRITICAL FIX: Revive PID when object detected (like original working code)
+    // This must come AFTER the MANUAL mode setting to override it
+    if (distancia < 200) {
+        myPID.SetMode(AUTOMATIC);  // Keep PID active!
+    }
+
     // Update global MotorDirection from PID-specific variable
     MotorDirection = PIDMotorDirection;
-    
+
     SetMotorControl();
-    
+
+    // Periodic debug output (every 2 seconds)
+    if (millis() - last_pid_debug > 2000) {
+        last_pid_debug = millis();
+        Serial.println("--- PID Status ---");
+        Serial.print("  Distance: "); Serial.print(distancia); Serial.print(" cm");
+        Serial.print(" | Ref: "); Serial.print(x_ref); Serial.println(" cm");
+        Serial.print("  Error: "); Serial.print(error_distancia);
+        Serial.print(" | PID Output: "); Serial.println(u);
+        Serial.print("  Gains: Kp="); Serial.print(Kp);
+        Serial.print(" Ki="); Serial.print(Ki);
+        Serial.print(" Kd="); Serial.println(Kd);
+        Serial.print("  Motor: Speed="); Serial.print(MotorSpeed);
+        Serial.print(" Dir="); Serial.print(MotorDirection ? "FWD" : "REV");
+        Serial.print(" | PID Mode: "); Serial.println(myPID.GetMode() == AUTOMATIC ? "AUTO" : "MANUAL");
+    }
+
     // Send data via UDP (PID format)
     send_udp_pid_data();
-    
+
     delay(SampleTime);
 }
 
