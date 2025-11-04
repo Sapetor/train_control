@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv
+
+# Local Configuration
+network_config.json
+
+# Experiment Data Files
+experiment_*.csv
+*.csv
+
+# IDE and Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# AI Assistant
+.claude/
+CLAUDE.md
+
+
+# Logs
+*.log
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# OS
+Thumbs.db
+Desktop.ini
+
+# Backup files
+*_backup.py
+*.bak

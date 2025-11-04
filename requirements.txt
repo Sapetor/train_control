@@ -1,0 +1,6 @@
+# Requirements for Train Control Platform
+dash>=2.14.0
+plotly>=5.15.0
+pandas>=1.5.0
+paho-mqtt>=1.6.0
+psutil>=5.9.0
