@@ -28,7 +28,6 @@ experiment_*.csv
 
 # AI Assistant
 .claude/
-CLAUDE.md
 
 
 # Logs
