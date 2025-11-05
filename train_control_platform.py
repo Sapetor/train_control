@@ -78,7 +78,7 @@ MQTT_TOPICS = {
     'kd_status': 'trenes/carroD/d/status',
     'ref_status': 'trenes/carroD/ref/status',
     'request_params': 'trenes/carroD/request_params',
-    
+
     # Step Response Topics
     'step_sync': 'trenes/step/sync',
     'step_amplitude': 'trenes/step/amplitude',
@@ -89,7 +89,19 @@ MQTT_TOPICS = {
     'step_time_status': 'trenes/step/time/status',
     'step_direction_status': 'trenes/step/direction/status',
     'step_vbatt_status': 'trenes/step/vbatt/status',
-    'step_request_params': 'trenes/step/request_params'
+    'step_request_params': 'trenes/step/request_params',
+
+    # Deadband Calibration Topics
+    'deadband_sync': 'trenes/deadband/sync',
+    'deadband_direction': 'trenes/deadband/direction',
+    'deadband_threshold': 'trenes/deadband/threshold',
+    'deadband_direction_status': 'trenes/deadband/direction/status',
+    'deadband_threshold_status': 'trenes/deadband/threshold/status',
+    'deadband_result': 'trenes/deadband/result',
+    'deadband_applied': 'trenes/deadband/applied',
+    'deadband_error': 'trenes/deadband/error',
+    'deadband_request_params': 'trenes/deadband/request_params',
+    'deadband_apply': 'trenes/deadband/apply'
 }
 
 # =============================================================================
@@ -645,6 +657,114 @@ class StepResponseDataManager(DataManager):
             print(f"Step data processing error: {e}")
 
 
+class DeadbandDataManager(DataManager):
+    """Manages deadband calibration data"""
+
+    def __init__(self):
+        super().__init__()
+        self.deadband_active = False
+        self.calibrated_deadband = 0
+        self.deadband_history = {
+            'time': [],
+            'pwm': [],
+            'distance': [],
+            'initial_distance': [],
+            'motion_detected': []
+        }
+
+    def create_deadband_csv(self):
+        """Create a new deadband calibration CSV file with timestamp"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"deadband_calibration_{timestamp}.csv"
+        csv_path = os.path.join(os.getcwd(), filename)
+        self.set_csv_file(csv_path)
+        return csv_path
+
+    def set_csv_file(self, filename):
+        """Create CSV with deadband calibration headers"""
+        self.csv_file = filename
+        self.initialized = True
+        try:
+            with open(filename, 'w', newline='') as file:
+                writer = csv.writer(file)
+                writer.writerow(['time_ms', 'pwm', 'distance_cm',
+                               'initial_distance_cm', 'motion_detected'])
+            print(f"Created deadband CSV: {filename}")
+        except Exception as e:
+            print(f"Error creating deadband CSV: {e}")
+            self.initialized = False
+
+    def add_data(self, data_string):
+        """Parse deadband data format: time,pwm,distance,initial_distance,motion_detected"""
+        try:
+            with self.data_lock:
+                # Update statistics
+                self.total_packets += 1
+                self.last_packet_time = datetime.now()
+                self.connection_status = "Connected"
+
+                # Parse deadband calibration data
+                data_parts = data_string.strip().split(',')
+                if len(data_parts) >= 5:
+                    self.latest_data = {
+                        'time': float(data_parts[0]),
+                        'pwm': int(float(data_parts[1])),
+                        'distance': float(data_parts[2]),
+                        'initial_distance': float(data_parts[3]),
+                        'motion_detected': int(float(data_parts[4])),
+                        'full_data': data_string,
+                        'packet_count': self.total_packets
+                    }
+
+                    # Store in history for graphing
+                    self.deadband_history['time'].append(self.latest_data['time'])
+                    self.deadband_history['pwm'].append(self.latest_data['pwm'])
+                    self.deadband_history['distance'].append(self.latest_data['distance'])
+                    self.deadband_history['initial_distance'].append(self.latest_data['initial_distance'])
+                    self.deadband_history['motion_detected'].append(self.latest_data['motion_detected'])
+
+                    # Add to queue for dashboard with overflow detection
+                    if not self.data_queue.full():
+                        self.data_queue.put(self.latest_data)
+                    else:
+                        # Queue is full - data will be dropped
+                        if self.total_packets % 100 == 0:  # Log occasionally
+                            print(f"[WARNING] Deadband data queue full - dropping packet {self.total_packets}")
+
+                    # Push update via WebSocket
+                    if self.websocket_callback:
+                        try:
+                            self.websocket_callback({'type': 'deadband_data_update', 'data': self.latest_data})
+                        except:
+                            pass
+
+                    # Write to CSV
+                    if self.csv_file:
+                        try:
+                            with open(self.csv_file, 'a', newline='') as file:
+                                file.write(data_string + '\n')
+                                file.flush()  # Ensure data is written to disk immediately
+                        except Exception as write_error:
+                            print(f"Deadband CSV write error: {write_error}")
+                else:
+                    if self.total_packets % 100 == 1:
+                        print(f"Deadband data format error - expected 5 fields, got {len(data_parts)}")
+
+        except Exception as e:
+            print(f"Deadband data processing error: {e}")
+
+    def clear_history(self):
+        """Clear history data for new calibration run"""
+        self.deadband_history = {
+            'time': [],
+            'pwm': [],
+            'distance': [],
+            'initial_distance': [],
+            'motion_detected': []
+        }
+        print("Deadband history cleared for new calibration")
+
+
 class UDPReceiver:
     """Background UDP data receiver"""
 
@@ -739,11 +859,14 @@ class TrainControlDashboard:
         self.data_manager = data_manager
         self.udp_receiver = udp_receiver
         
-        # Track which experiment mode is active ('pid' or 'step')
+        # Track which experiment mode is active ('pid', 'step', or 'deadband')
         self.experiment_mode = 'pid'  # Default to PID mode
-        
+
         # Create step response data manager
         self.step_data_manager = StepResponseDataManager()
+
+        # Create deadband calibration data manager
+        self.deadband_data_manager = DeadbandDataManager()
         
 
         # Initialize current language from network manager
