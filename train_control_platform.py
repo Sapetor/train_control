@@ -2089,9 +2089,9 @@ class TrainControlDashboard:
             ], style={'display': 'flex', 'gap': '20px'})
         ])
 
-def create_deadband_tab(self):
-    """Create deadband calibration tab"""
-    return html.Div([
+    def create_deadband_tab(self):
+        """Create deadband calibration tab"""
+        return html.Div([
         html.H3(self.t('deadband_title'), style={'color': self.colors['text'], 'marginBottom': '20px'}),
 
         html.Div([
