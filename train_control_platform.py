@@ -616,7 +616,10 @@ class DataManager:
         """Set the CSV file for data storage"""
         # Prepend train ID to filename if specified
         if self.train_id:
-            filename = f"{self.train_id}_{filename}"
+            # Extract directory and basename to avoid prepending to full path
+            dirname = os.path.dirname(filename)
+            basename = os.path.basename(filename)
+            filename = os.path.join(dirname, f"{self.train_id}_{basename}") if dirname else f"{self.train_id}_{basename}"
 
         self.csv_file = filename
         self.initialized = True
@@ -1955,7 +1958,8 @@ class TrainControlDashboard:
         print(f"Deadband tab translation (ES): {self.translations['es'].get('deadband_tab', 'MISSING')}")
         print(f"Deadband tab translation (EN): {self.translations['en'].get('deadband_tab', 'MISSING')}")
 
-        self.app.layout = html.Div([
+        # Create layout and store as instance variable
+        self.layout = html.Div([
 
             dcc.Store(id='language-store', data={'language': 'es'}),
             dcc.Store(id='network-config-store', data={}),
@@ -2071,6 +2075,16 @@ class TrainControlDashboard:
             # Tab content
             html.Div(id='tab-content')
         ], style={'backgroundColor': self.colors['background'], 'minHeight': '100vh', 'padding': '16px'})
+
+        # In single-train mode, assign layout to app
+        # In multi-train mode, wrapper will access self.layout directly
+        if not hasattr(self, 'train_config') or self.train_config is None:
+            # Single-train mode
+            self.app.layout = self.layout
+            print(f"  - Layout assigned to app (single-train mode)")
+        else:
+            # Multi-train mode - layout stored but not assigned to shared app
+            print(f"  - Layout stored as instance variable (multi-train mode, train: {self.train_config.id})")
 
         print(f"Layout created with 5 tabs:")
         print(f"  1. {self.t('network_tab')}")

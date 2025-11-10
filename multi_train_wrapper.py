@@ -282,8 +282,9 @@ class MultiTrainApp:
             })
         ], style={'padding': '0 20px 10px'})
 
-        # Get dashboard layout
-        dashboard_content = dashboard.app.layout
+        # Get dashboard layout from instance variable (not app.layout)
+        # Each dashboard stores its layout separately in multi-train mode
+        dashboard_content = dashboard.layout
 
         return html.Div([back_button, train_badge, dashboard_content])
 
