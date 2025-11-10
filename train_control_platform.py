@@ -1847,11 +1847,21 @@ class TrainControlDashboard:
                     # publish.single(self.get_topic('deadband_sync'), 'False', hostname=self.network_manager.mqtt_broker_ip)
                     time.sleep(0.3)
 
-                # Request parameters for new mode
+                # Send default parameters and request confirmation for new mode
                 if new_mode == 'step':
-                    print("[MODE SWITCH] Requesting current step parameters from ESP32...")
-                    publish.single(self.get_topic('step_request_params'), '1', hostname=self.network_manager.mqtt_broker_ip)
-                    time.sleep(0.2)
+                    print("[MODE SWITCH] Sending default step parameters to ESP32...")
+                    # Send sensible defaults
+                    default_amplitude = 3.0
+                    default_duration = 2.0
+                    default_direction = 1  # Forward
+                    default_vbatt = 8.4
+
+                    publish.single(self.get_topic('step_amplitude'), str(default_amplitude), hostname=self.network_manager.mqtt_broker_ip)
+                    publish.single(self.get_topic('step_time'), str(default_duration), hostname=self.network_manager.mqtt_broker_ip)
+                    publish.single(self.get_topic('step_direction'), str(default_direction), hostname=self.network_manager.mqtt_broker_ip)
+                    publish.single(self.get_topic('step_vbatt'), str(default_vbatt), hostname=self.network_manager.mqtt_broker_ip)
+                    print(f"[MODE SWITCH] Sent defaults: amp={default_amplitude}V, time={default_duration}s, dir={default_direction}, vbatt={default_vbatt}V")
+                    time.sleep(0.3)  # Wait for ESP32 to process and confirm
                 elif new_mode == 'pid':
                     print("[MODE SWITCH] Requesting current PID parameters from ESP32...")
                     publish.single(self.get_topic('request_params'), '1', hostname=self.network_manager.mqtt_broker_ip)
@@ -3394,38 +3404,6 @@ class TrainControlDashboard:
                               style={'color': self.colors['warning']})
             else:
                 return self._get_step_parameter_status_display()
-
-        # Auto-send default step response parameters when tab is activated
-        @self.app.callback(
-            Output('amplitude-input', 'value'),  # Dummy output to satisfy callback requirement
-            [Input('main-tabs', 'value')],
-            prevent_initial_call=True
-        )
-        def auto_send_step_defaults(active_tab):
-            """Automatically send default step response parameters when tab is activated"""
-            if active_tab == 'step-response-tab' and self.network_manager.selected_ip:
-                try:
-                    # Send default parameters to ESP32
-                    default_amplitude = 3.0
-                    default_duration = 2.0
-                    default_direction = 1  # Forward
-                    default_vbatt = 8.4
-
-                    publish.single(self.get_topic('step_amplitude'), str(default_amplitude),
-                                 hostname=self.network_manager.mqtt_broker_ip)
-                    publish.single(self.get_topic('step_time'), str(default_duration),
-                                 hostname=self.network_manager.mqtt_broker_ip)
-                    publish.single(self.get_topic('step_direction'), str(default_direction),
-                                 hostname=self.network_manager.mqtt_broker_ip)
-                    publish.single(self.get_topic('step_vbatt'), str(default_vbatt),
-                                 hostname=self.network_manager.mqtt_broker_ip)
-
-                    print(f"[AUTO-SEND] Step Response defaults sent: amp={default_amplitude}V, time={default_duration}s, dir={default_direction}, vbatt={default_vbatt}V")
-                except Exception as e:
-                    print(f"[AUTO-SEND ERROR] Failed to send step defaults: {e}")
-
-            # Return the same value (no actual change to input)
-            return 3.0
 
         # Step Response Graph Update
         @self.app.callback(
