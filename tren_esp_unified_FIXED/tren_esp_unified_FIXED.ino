@@ -555,6 +555,12 @@ void mqtt_callback(char* topic, byte* payload, unsigned int length) {
             double new_Kp = mensaje.toFloat();
             if (new_Kp != Kp) {
                 Kp = new_Kp;
+                // Apply parameters IMMEDIATELY if in PID mode
+                if (currentExperimentMode == PID_MODE && experimentActive) {
+                    myPID.SetTunings(Kp, Ki, Kd);
+                    Serial.print("[PID] Kp updated immediately: ");
+                    Serial.println(Kp);
+                }
                 pid_params_changed = true;
                 client.publish("trenes/carroD/p/status", String(Kp).c_str());
             }
@@ -563,6 +569,12 @@ void mqtt_callback(char* topic, byte* payload, unsigned int length) {
             double new_Ki = mensaje.toFloat();
             if (new_Ki != Ki) {
                 Ki = new_Ki;
+                // Apply parameters IMMEDIATELY if in PID mode
+                if (currentExperimentMode == PID_MODE && experimentActive) {
+                    myPID.SetTunings(Kp, Ki, Kd);
+                    Serial.print("[PID] Ki updated immediately: ");
+                    Serial.println(Ki);
+                }
                 pid_params_changed = true;
                 client.publish("trenes/carroD/i/status", String(Ki).c_str());
             }
@@ -571,6 +583,12 @@ void mqtt_callback(char* topic, byte* payload, unsigned int length) {
             double new_Kd = mensaje.toFloat();
             if (new_Kd != Kd) {
                 Kd = new_Kd;
+                // Apply parameters IMMEDIATELY if in PID mode
+                if (currentExperimentMode == PID_MODE && experimentActive) {
+                    myPID.SetTunings(Kp, Ki, Kd);
+                    Serial.print("[PID] Kd updated immediately: ");
+                    Serial.println(Kd);
+                }
                 pid_params_changed = true;
                 client.publish("trenes/carroD/d/status", String(Kd).c_str());
             }
