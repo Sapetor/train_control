@@ -95,10 +95,12 @@ class MultiTrainApp:
                 }
 
                 # Create dashboard instance for this train
+                # CRITICAL: Pass the shared app so callbacks register on the wrapper's app
                 dashboard = TrainControlDashboard(
                     network_manager=self.network_manager,
                     data_manager=data_manager,
-                    udp_receiver=udp_receiver
+                    udp_receiver=udp_receiver,
+                    app=self.app  # Share the wrapper's app instance
                 )
 
                 # Override data managers with train-specific ones

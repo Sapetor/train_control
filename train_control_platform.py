@@ -1054,11 +1054,20 @@ class UDPReceiver:
 class TrainControlDashboard:
     """Enhanced Dash dashboard with network configuration and language support"""
 
-    def __init__(self, network_manager, data_manager, udp_receiver):
+    def __init__(self, network_manager, data_manager, udp_receiver, app=None):
+        """
+        Initialize Train Control Dashboard.
+
+        Args:
+            network_manager: NetworkManager instance
+            data_manager: DataManager instance
+            udp_receiver: UDPReceiver instance
+            app: Optional Dash app instance (for multi-train mode). If None, creates new app.
+        """
         self.network_manager = network_manager
         self.data_manager = data_manager
         self.udp_receiver = udp_receiver
-        
+
         # Track which experiment mode is active ('pid', 'step', or 'deadband')
         self.experiment_mode = 'pid'  # Default to PID mode
 
@@ -1071,13 +1080,13 @@ class TrainControlDashboard:
 
         # Create deadband calibration data manager
         self.deadband_data_manager = DeadbandDataManager()
-        
+
 
         # Initialize current language from network manager
 
         self.current_language = self.network_manager.language
 
-        
+
 
         # Initialize MQTT parameter sync with train-specific topics
         # Use self.mqtt_topics if set by multi_train_wrapper, else use global MQTT_TOPICS
@@ -1450,9 +1459,16 @@ class TrainControlDashboard:
         # Dashboard configuration with custom CSS
         # Removed old CodePen CSS that was hiding 5th tab - keeping only Google Fonts
         external_stylesheets = ['https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap']
-        self.app = dash.Dash(__name__, external_stylesheets=external_stylesheets,
-                            suppress_callback_exceptions=True)
-        
+
+        # Use provided app (multi-train mode) or create new app (single-train mode)
+        if app is not None:
+            self.app = app
+            print(f"  - Using shared Dash app (multi-train mode)")
+        else:
+            self.app = dash.Dash(__name__, external_stylesheets=external_stylesheets,
+                                suppress_callback_exceptions=True)
+            print(f"  - Created new Dash app (single-train mode)")
+
         # Setup message queue for push notifications
         self.websocket_messages = queue.Queue(maxsize=100)
         
@@ -1804,7 +1820,7 @@ class TrainControlDashboard:
         return self.translations[self.current_language].get(key, key)
     
     def switch_experiment_mode(self, new_mode):
-        """Safely switch between PID and Step Response experiment modes"""
+        """Safely switch between PID, Step Response, and Deadband experiment modes"""
         if new_mode == self.experiment_mode:
             return  # Already in the requested mode
 
@@ -1813,27 +1829,32 @@ class TrainControlDashboard:
         # Only send MQTT messages if network is configured
         if self.network_manager.mqtt_broker_ip:
             try:
-                # CRITICAL FIX: Tell ESP32 to switch modes immediately
-                # This allows ESP32 to accept step parameters before starting experiment
-                if new_mode == 'step':
-                    print("[MODE SWITCH] Telling ESP32 to enter Step Response mode...")
-                    # Stop PID mode first
+                # Stop current mode on ESP32 first
+                if self.experiment_mode == 'pid':
+                    print("[MODE SWITCH] Stopping PID mode on ESP32...")
                     publish.single(self.get_topic('sync'), 'False', hostname=self.network_manager.mqtt_broker_ip)
                     time.sleep(0.3)
+                elif self.experiment_mode == 'step':
+                    print("[MODE SWITCH] Stopping Step Response mode on ESP32...")
+                    publish.single(self.get_topic('step_sync'), 'False', hostname=self.network_manager.mqtt_broker_ip)
+                    time.sleep(0.3)
+                elif self.experiment_mode == 'deadband':
+                    print("[MODE SWITCH] Stopping Deadband mode on ESP32...")
+                    # Stop deadband sync if implemented
+                    # publish.single(self.get_topic('deadband_sync'), 'False', hostname=self.network_manager.mqtt_broker_ip)
+                    time.sleep(0.3)
 
-                    # FIXED: ESP32 firmware now accepts step parameters regardless of mode
-                    # No need to switch modes or send dummy parameters
-                    # Just request current parameters to populate the status display
+                # Request parameters for new mode
+                if new_mode == 'step':
                     print("[MODE SWITCH] Requesting current step parameters from ESP32...")
                     publish.single(self.get_topic('step_request_params'), '1', hostname=self.network_manager.mqtt_broker_ip)
                     time.sleep(0.2)
-                    print("[MODE SWITCH] ESP32 now in STEP_MODE and ready for parameters")
-                else:  # Switching to PID mode
-                    print("[MODE SWITCH] Telling ESP32 to enter PID mode...")
-                    # Stop step mode first
-                    publish.single(self.get_topic('step_sync'), 'False', hostname=self.network_manager.mqtt_broker_ip)
-                    time.sleep(0.3)
-                    # ESP32 will default back to PID mode
+                elif new_mode == 'pid':
+                    print("[MODE SWITCH] Requesting current PID parameters from ESP32...")
+                    publish.single(self.get_topic('request_params'), '1', hostname=self.network_manager.mqtt_broker_ip)
+                    time.sleep(0.2)
+                # Deadband mode doesn't need parameter request
+
             except Exception as e:
                 print(f"[MODE SWITCH] Failed to send MQTT commands: {e}")
                 print("[MODE SWITCH] Check network configuration - MQTT broker may not be reachable")
@@ -1865,13 +1886,25 @@ class TrainControlDashboard:
             # Create new CSV for step response
             csv_path = self.step_data_manager.create_step_csv()
             print(f"[MODE SWITCH] Created step response CSV: {csv_path}")
-            
+
             # Set UDP receiver to use step data manager
             self.udp_receiver.set_data_manager(self.step_data_manager)
-            
+
             # Update experiment mode
             self.experiment_mode = 'step'
-            
+
+        elif new_mode == 'deadband':
+            print("[MODE SWITCH] Switching to Deadband Calibration mode")
+            # Create new CSV for deadband data
+            csv_path = self.deadband_data_manager.create_deadband_csv()
+            print(f"[MODE SWITCH] Created deadband CSV: {csv_path}")
+
+            # Set UDP receiver to use deadband data manager
+            self.udp_receiver.set_data_manager(self.deadband_data_manager)
+
+            # Update experiment mode
+            self.experiment_mode = 'deadband'
+
         else:  # PID mode
             print("[MODE SWITCH] Switching to PID Control mode")
             # Create new CSV for PID data
@@ -1880,10 +1913,10 @@ class TrainControlDashboard:
             csv_path = os.path.join(os.getcwd(), csv_filename)
             self.data_manager.set_csv_file(csv_path)
             print(f"[MODE SWITCH] Created PID CSV: {csv_path}")
-            
+
             # Set UDP receiver to use regular data manager
             self.udp_receiver.set_data_manager(self.data_manager)
-            
+
             # Update experiment mode
             self.experiment_mode = 'pid'
         
@@ -2702,28 +2735,37 @@ class TrainControlDashboard:
             """Track which experiment mode is active based on tab"""
             # When switching tabs, stop any running experiment to prevent conflicts
             if self.network_manager.selected_ip:
-                new_mode = 'step' if active_tab == 'step-response-tab' else 'pid'
-                
+                # Determine new mode based on active tab
+                if active_tab == 'step-response-tab':
+                    new_mode = 'step'
+                elif active_tab == 'deadband-tab':
+                    new_mode = 'deadband'
+                else:
+                    new_mode = 'pid'  # control-tab, data-tab, network-tab all use PID mode
+
                 # Stop any active experiments before switching
-                if new_mode == 'step' and self.experiment_mode == 'pid':
-                    # Switching from PID to Step - stop PID experiment
-                    if self.data_manager.experiment_active:
-                        print("[MODE SWITCH] Stopping PID experiment before switching to Step Response")
+                if new_mode != self.experiment_mode:
+                    if self.experiment_mode == 'pid' and self.data_manager.experiment_active:
+                        print(f"[MODE SWITCH] Stopping PID experiment before switching to {new_mode}")
                         self.data_manager.stop_experiment()
                         publish.single(self.get_topic('sync'), 'False', hostname=self.network_manager.mqtt_broker_ip)
-                elif new_mode == 'pid' and self.experiment_mode == 'step':
-                    # Switching from Step to PID - stop Step experiment
-                    if self.step_data_manager.experiment_active:
-                        print("[MODE SWITCH] Stopping Step Response experiment before switching to PID")
+                    elif self.experiment_mode == 'step' and self.step_data_manager.experiment_active:
+                        print(f"[MODE SWITCH] Stopping Step Response experiment before switching to {new_mode}")
                         self.step_data_manager.stop_experiment()
                         publish.single(self.get_topic('step_sync'), 'False', hostname=self.network_manager.mqtt_broker_ip)
-                
-                # Use the new mode switching method
-                self.switch_experiment_mode(new_mode)
-            
+                    elif self.experiment_mode == 'deadband' and self.deadband_data_manager.experiment_active:
+                        print(f"[MODE SWITCH] Stopping Deadband experiment before switching to {new_mode}")
+                        self.deadband_data_manager.stop_experiment()
+                        # Stop deadband sync if needed
+
+                    # Use the new mode switching method
+                    self.switch_experiment_mode(new_mode)
+
             # Return the new mode
             if active_tab == 'step-response-tab':
                 return {'mode': 'step'}
+            elif active_tab == 'deadband-tab':
+                return {'mode': 'deadband'}
             else:
                 return {'mode': 'pid'}
         
