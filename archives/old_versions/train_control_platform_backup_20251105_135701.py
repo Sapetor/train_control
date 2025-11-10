@@ -1,7 +1,6 @@
 """
 Train Control Platform - Unified ESP32 PID Control System
 =========================================================
-VERSION: 2025-11-06-v2 (Step Response Fix + Deadband Tab Debug)
 
 This platform combines UDP data collection and Dash dashboard into a single
 application with advanced network configuration capabilities.
@@ -36,8 +35,6 @@ from datetime import datetime
 import psutil
 import json
 import uuid
-from dataclasses import dataclass
-from typing import Dict, Optional
 
 # =============================================================================
 # Configuration Constants
@@ -81,7 +78,7 @@ MQTT_TOPICS = {
     'kd_status': 'trenes/carroD/d/status',
     'ref_status': 'trenes/carroD/ref/status',
     'request_params': 'trenes/carroD/request_params',
-
+    
     # Step Response Topics
     'step_sync': 'trenes/step/sync',
     'step_amplitude': 'trenes/step/amplitude',
@@ -92,152 +89,8 @@ MQTT_TOPICS = {
     'step_time_status': 'trenes/step/time/status',
     'step_direction_status': 'trenes/step/direction/status',
     'step_vbatt_status': 'trenes/step/vbatt/status',
-    'step_request_params': 'trenes/step/request_params',
-
-    # Deadband Calibration Topics
-    'deadband_sync': 'trenes/deadband/sync',
-    'deadband_direction': 'trenes/deadband/direction',
-    'deadband_threshold': 'trenes/deadband/threshold',
-    'deadband_direction_status': 'trenes/deadband/direction/status',
-    'deadband_threshold_status': 'trenes/deadband/threshold/status',
-    'deadband_result': 'trenes/deadband/result',
-    'deadband_applied': 'trenes/deadband/applied',
-    'deadband_error': 'trenes/deadband/error',
-    'deadband_request_params': 'trenes/deadband/request_params',
-    'deadband_apply': 'trenes/deadband/apply'
+    'step_request_params': 'trenes/step/request_params'
 }
-
-# =============================================================================
-# Train Configuration Management
-# =============================================================================
-
-@dataclass
-class TrainConfig:
-    """Configuration for a single train"""
-    id: str
-    name: str
-    udp_port: int
-    mqtt_prefix: str
-    pid_limits: Dict[str, int]
-    enabled: bool = True
-
-    def get_topic(self, base_topic: str) -> str:
-        """Convert base topic to train-specific topic"""
-        # Replace 'trenes/' with train-specific prefix
-        if base_topic.startswith('trenes/'):
-            return base_topic.replace('trenes/', f'{self.mqtt_prefix}/', 1)
-        return f'{self.mqtt_prefix}/{base_topic}'
-
-
-class TrainConfigManager:
-    """Manages train configurations from JSON file"""
-
-    def __init__(self, config_file='trains_config.json'):
-        self.config_file = config_file
-        self.trains: Dict[str, TrainConfig] = {}
-        self.admin_password = "admin123"
-        self.dashboard_host = "127.0.0.1"
-        self.dashboard_port = 8050
-        self.load_config()
-
-    def load_config(self):
-        """Load train configurations from JSON file"""
-        try:
-            if os.path.exists(self.config_file):
-                with open(self.config_file, 'r') as f:
-                    config_data = json.load(f)
-
-                self.admin_password = config_data.get('admin_password', 'admin123')
-                self.dashboard_host = config_data.get('dashboard_host', '127.0.0.1')
-                self.dashboard_port = config_data.get('dashboard_port', 8050)
-
-                for train_id, train_data in config_data.get('trains', {}).items():
-                    self.trains[train_id] = TrainConfig(**train_data)
-
-                print(f"[CONFIG] Loaded {len(self.trains)} train configurations")
-            else:
-                print(f"[CONFIG] No config file found, using defaults")
-                self._create_default_config()
-        except Exception as e:
-            print(f"[CONFIG ERROR] Failed to load config: {e}")
-            self._create_default_config()
-
-    def _create_default_config(self):
-        """Create default configuration with 3 trains"""
-        self.trains = {
-            'trainA': TrainConfig(
-                id='trainA',
-                name='Train A',
-                udp_port=5555,
-                mqtt_prefix='trenes/trainA',
-                pid_limits={'kp_max': 250, 'ki_max': 150, 'kd_max': 150},
-                enabled=True
-            ),
-            'trainB': TrainConfig(
-                id='trainB',
-                name='Train B',
-                udp_port=5556,
-                mqtt_prefix='trenes/trainB',
-                pid_limits={'kp_max': 250, 'ki_max': 150, 'kd_max': 150},
-                enabled=True
-            ),
-            'trainC': TrainConfig(
-                id='trainC',
-                name='Train C',
-                udp_port=5557,
-                mqtt_prefix='trenes/trainC',
-                pid_limits={'kp_max': 250, 'ki_max': 150, 'kd_max': 150},
-                enabled=True
-            )
-        }
-        self.save_config()
-
-    def save_config(self):
-        """Save train configurations to JSON file"""
-        try:
-            config_data = {
-                'trains': {
-                    train_id: {
-                        'id': train.id,
-                        'name': train.name,
-                        'udp_port': train.udp_port,
-                        'mqtt_prefix': train.mqtt_prefix,
-                        'pid_limits': train.pid_limits,
-                        'enabled': train.enabled
-                    }
-                    for train_id, train in self.trains.items()
-                },
-                'admin_password': self.admin_password,
-                'dashboard_host': self.dashboard_host,
-                'dashboard_port': self.dashboard_port
-            }
-
-            with open(self.config_file, 'w') as f:
-                json.dump(config_data, f, indent=2)
-
-            print(f"[CONFIG] Saved {len(self.trains)} train configurations")
-        except Exception as e:
-            print(f"[CONFIG ERROR] Failed to save config: {e}")
-
-    def get_enabled_trains(self) -> Dict[str, TrainConfig]:
-        """Get only enabled trains"""
-        return {tid: t for tid, t in self.trains.items() if t.enabled}
-
-    def add_train(self, train: TrainConfig):
-        """Add a new train configuration"""
-        self.trains[train.id] = train
-        self.save_config()
-
-    def remove_train(self, train_id: str):
-        """Remove a train configuration"""
-        if train_id in self.trains:
-            del self.trains[train_id]
-            self.save_config()
-
-    def update_train(self, train_id: str, train: TrainConfig):
-        """Update an existing train configuration"""
-        self.trains[train_id] = train
-        self.save_config()
 
 # =============================================================================
 # Classes
@@ -415,38 +268,28 @@ class NetworkManager:
         self.language = 'es'  # Default language
         self.config_file = 'network_config.json'
         self.load_config()
-        # Detect interfaces at startup to ensure dropdown is populated
-        self.detect_interfaces()
 
     def detect_interfaces(self):
         """Detect all available network interfaces and their IP addresses"""
         interfaces = {}
 
         try:
-            print("\n[INTERFACE DETECTION] Scanning network interfaces...")
             # Get all network interfaces
             for interface_name, interface_addresses in psutil.net_if_addrs().items():
                 for address in interface_addresses:
                     if address.family == socket.AF_INET:  # IPv4
                         ip = address.address
-                        print(f"[INTERFACE DETECTION] Found: {interface_name} -> {ip}")
                         # Skip loopback and invalid IPs
                         if ip and ip != '127.0.0.1' and not ip.startswith('169.254'):
                             # Classify interface type
                             interface_type = self._classify_interface(interface_name, ip)
-                            label = f"{interface_type}: {ip}"
-                            interfaces[label] = {
+                            interfaces[f"{interface_type}: {ip}"] = {
                                 'ip': ip,
                                 'interface': interface_name,
                                 'type': interface_type
                             }
-                            print(f"[INTERFACE DETECTION] ✓ Added to dropdown: {label}")
-                        else:
-                            print(f"[INTERFACE DETECTION] ✗ Skipped (loopback or link-local)")
-
-            print(f"[INTERFACE DETECTION] Total interfaces added: {len(interfaces)}")
         except Exception as e:
-            print(f"[INTERFACE DETECTION] Error detecting interfaces: {e}")
+            print(f"Error detecting interfaces: {e}")
             # Fallback to basic detection
             interfaces["Default: 192.168.137.1"] = {
                 'ip': '192.168.137.1',
@@ -480,18 +323,11 @@ class NetworkManager:
 
     def get_interface_options(self):
         """Get formatted options for dropdown"""
-        print(f"\n[GET OPTIONS] Current interfaces dict has {len(self.interfaces)} items")
         if not self.interfaces:
-            print("[GET OPTIONS] Interfaces empty, re-detecting...")
             self.detect_interfaces()
-
-        print("[GET OPTIONS] Building dropdown options:")
-        for name, info in self.interfaces.items():
-            print(f"[GET OPTIONS]   - {name} ({info['ip']})")
 
         options = [{'label': name, 'value': info['ip']}
                   for name, info in self.interfaces.items()]
-        print(f"[GET OPTIONS] Returning {len(options)} options to dropdown\n")
         return options
 
     def set_selected_ip(self, ip):
@@ -578,8 +414,7 @@ class NetworkManager:
 class DataManager:
     """Manages thread-safe data sharing between UDP receiver and dashboard"""
 
-    def __init__(self, train_id: str = ""):
-        self.train_id = train_id  # Train identifier for multi-train support
+    def __init__(self):
         self.data_queue = queue.Queue(maxsize=1000)
         self.latest_data = {}
         self.experiment_active = False
@@ -591,7 +426,10 @@ class DataManager:
         self.total_packets = 0
         self.last_packet_time = None
         self.connection_status = "Waiting for data"
-
+        
+        # WebSocket callback for push notifications
+        self.websocket_callback = None
+        
         # WebSocket callback for push notifications
         self.websocket_callback = None
 
@@ -605,10 +443,6 @@ class DataManager:
 
     def set_csv_file(self, filename):
         """Set the CSV file for data storage"""
-        # Prepend train ID to filename if specified
-        if self.train_id:
-            filename = f"{self.train_id}_{filename}"
-
         self.csv_file = filename
         self.initialized = True
         # Create CSV with headers
@@ -725,23 +559,19 @@ class DataManager:
 
 class StepResponseDataManager(DataManager):
     """Manages step response experiment data with different CSV format"""
-
-    def __init__(self, train_id: str = ""):
-        super().__init__(train_id)
+    
+    def __init__(self):
+        super().__init__()
         self.step_active = False
-
+    
     def create_step_csv(self):
         """Create a new step response CSV file with timestamp"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        # Prepend train ID to filename if specified
-        if self.train_id:
-            filename = f"{self.train_id}_step_response_{timestamp}.csv"
-        else:
-            filename = f"step_response_{timestamp}.csv"
+        filename = f"step_response_{timestamp}.csv"
         csv_path = os.path.join(os.getcwd(), filename)
         self.set_csv_file(csv_path)
         return csv_path
-
+    
     def set_csv_file(self, filename):
         """Create CSV with step response headers"""
         self.csv_file = filename
@@ -749,31 +579,29 @@ class StepResponseDataManager(DataManager):
         try:
             with open(filename, 'w', newline='') as file:
                 writer = csv.writer(file)
-                # NEW: Added 'applied_step' column to show when step is actually applied (0 for baseline samples)
-                writer.writerow(['time2sinc', 'time_event', 'motor_dir', 'v_batt',
-                               'output_G', 'step_input', 'PWM_input', 'applied_step'])
+                writer.writerow(['time2sinc', 'time_event', 'motor_dir', 'v_batt', 
+                               'output_G', 'step_input', 'PWM_input'])
             print(f"Created step response CSV: {filename}")
         except Exception as e:
             print(f"Error creating step response CSV: {e}")
             self.initialized = False
     
     def add_data(self, data_string):
-        """Parse step response data format: time2sinc,time_event,motor_dir,v_batt,output_G,step_input,PWM_input,applied_step"""
+        """Parse step response data format: time2sinc,time_event,motor_dir,v_batt,output_G,step_input,PWM_input"""
         try:
             with self.data_lock:
                 # Update statistics
                 self.total_packets += 1
                 self.last_packet_time = datetime.now()
                 self.connection_status = "Connected"
-
+                
                 # Skip header lines that ESP32 sends repeatedly
                 if data_string.strip().startswith('time2sinc'):
                     return
-
+                
                 # Parse step response data
                 data_parts = data_string.strip().split(',')
-                if len(data_parts) >= 8:
-                    # NEW: Parse 8 fields including applied_step
+                if len(data_parts) >= 7:
                     self.latest_data = {
                         'time2sinc': float(data_parts[0]),
                         'time_event': float(data_parts[1]),
@@ -782,152 +610,25 @@ class StepResponseDataManager(DataManager):
                         'output_G': float(data_parts[4]),
                         'step_input': float(data_parts[5]),
                         'PWM_input': float(data_parts[6]),
-                        'applied_step': float(data_parts[7]),  # NEW: 0 for baseline, then StepAmplitude
                         'full_data': data_string,
                         'packet_count': self.total_packets
                     }
-                elif len(data_parts) >= 7:
-                    # Backward compatibility for old firmware without applied_step field
-                    self.latest_data = {
-                        'time2sinc': float(data_parts[0]),
-                        'time_event': float(data_parts[1]),
-                        'motor_dir': int(float(data_parts[2])),
-                        'v_batt': float(data_parts[3]),
-                        'output_G': float(data_parts[4]),
-                        'step_input': float(data_parts[5]),
-                        'PWM_input': float(data_parts[6]),
-                        'applied_step': float(data_parts[5]),  # Fallback: use step_input
-                        'full_data': data_string,
-                        'packet_count': self.total_packets
-                    }
-                else:
-                    # Invalid data - less than 7 fields
-                    if self.total_packets % 100 == 1:
-                        print(f"Step data format error - expected 8 fields (or 7 for old firmware), got {len(data_parts)}")
-                    return
-
-                # Add to queue for dashboard with overflow detection
-                if not self.data_queue.full():
-                    self.data_queue.put(self.latest_data)
-                else:
-                    # Queue is full - data will be dropped
-                    if self.total_packets % 100 == 0:  # Log occasionally
-                        print(f"[WARNING] Step data queue full - dropping packet {self.total_packets}")
-
-                # Push update via WebSocket
-                if self.websocket_callback:
-                    try:
-                        self.websocket_callback({'type': 'step_data_update', 'data': self.latest_data})
-                    except:
-                        pass
-
-                # Write to CSV
-                if self.csv_file:
-                    try:
-                        with open(self.csv_file, 'a', newline='') as file:
-                            file.write(data_string + '\n')
-                            file.flush()  # Ensure data is written to disk immediately
-                    except Exception as write_error:
-                        print(f"Step CSV write error: {write_error}")
-        
-        except Exception as e:
-            print(f"Step data processing error: {e}")
-
-
-class DeadbandDataManager(DataManager):
-    """Manages deadband calibration data"""
-
-    def __init__(self, train_id: str = ""):
-        super().__init__(train_id)
-        self.deadband_active = False
-        self.calibrated_deadband = 0
-        self.deadband_history = {
-            'time': [],
-            'pwm': [],
-            'distance': [],
-            'initial_distance': [],
-            'motion_detected': []
-        }
-
-    def create_deadband_csv(self):
-        """Create a new deadband calibration CSV file with timestamp"""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        # Prepend train ID to filename if specified
-        if self.train_id:
-            filename = f"{self.train_id}_deadband_calibration_{timestamp}.csv"
-        else:
-            filename = f"deadband_calibration_{timestamp}.csv"
-        csv_path = os.path.join(os.getcwd(), filename)
-        self.set_csv_file(csv_path)
-        return csv_path
-
-    def set_csv_file(self, filename):
-        """Create CSV with deadband calibration headers"""
-        self.csv_file = filename
-        self.initialized = True
-        try:
-            with open(filename, 'w', newline='') as file:
-                writer = csv.writer(file)
-                writer.writerow(['time_ms', 'pwm', 'distance_cm',
-                               'initial_distance_cm', 'motion_detected'])
-            print(f"Created deadband CSV: {filename}")
-        except Exception as e:
-            print(f"Error creating deadband CSV: {e}")
-            self.initialized = False
-
-    def add_data(self, data_string):
-        """Parse deadband data format: time,pwm,distance,initial_distance,motion_detected"""
-        try:
-            with self.data_lock:
-                # Update statistics
-                self.total_packets += 1
-                self.last_packet_time = datetime.now()
-                self.connection_status = "Connected"
-
-                # Parse deadband calibration data
-                data_parts = data_string.strip().split(',')
-                if len(data_parts) >= 5:
-                    self.latest_data = {
-                        'time': float(data_parts[0]),
-                        'pwm': int(float(data_parts[1])),
-                        'distance': float(data_parts[2]),
-                        'initial_distance': float(data_parts[3]),
-                        'motion_detected': int(float(data_parts[4])),
-                        'full_data': data_string,
-                        'packet_count': self.total_packets
-                    }
-
-                    # Store in history for graphing
-                    self.deadband_history['time'].append(self.latest_data['time'])
-                    self.deadband_history['pwm'].append(self.latest_data['pwm'])
-                    self.deadband_history['distance'].append(self.latest_data['distance'])
-                    self.deadband_history['initial_distance'].append(self.latest_data['initial_distance'])
-                    self.deadband_history['motion_detected'].append(self.latest_data['motion_detected'])
-
-                    # Debug: Print motion_detected value periodically
-                    if self.total_packets % 20 == 0:  # Print every 20 packets
-                        print(f"[DEADBAND DEBUG] PWM={self.latest_data['pwm']}, motion_detected={self.latest_data['motion_detected']}, calibrated={self.calibrated_deadband}")
-
-                    # Detect when motion is first detected (motion_detected = 1)
-                    if self.latest_data['motion_detected'] == 1 and self.calibrated_deadband == 0:
-                        self.calibrated_deadband = self.latest_data['pwm']
-                        print(f"[DEADBAND] ✓ Motion detected! Calibrated deadband = {self.calibrated_deadband} PWM")
-
+                    
                     # Add to queue for dashboard with overflow detection
                     if not self.data_queue.full():
                         self.data_queue.put(self.latest_data)
                     else:
                         # Queue is full - data will be dropped
                         if self.total_packets % 100 == 0:  # Log occasionally
-                            print(f"[WARNING] Deadband data queue full - dropping packet {self.total_packets}")
-
+                            print(f"[WARNING] Step data queue full - dropping packet {self.total_packets}")
+                    
                     # Push update via WebSocket
                     if self.websocket_callback:
                         try:
-                            self.websocket_callback({'type': 'deadband_data_update', 'data': self.latest_data})
+                            self.websocket_callback({'type': 'step_data_update', 'data': self.latest_data})
                         except:
                             pass
-
+                    
                     # Write to CSV
                     if self.csv_file:
                         try:
@@ -935,25 +636,13 @@ class DeadbandDataManager(DataManager):
                                 file.write(data_string + '\n')
                                 file.flush()  # Ensure data is written to disk immediately
                         except Exception as write_error:
-                            print(f"Deadband CSV write error: {write_error}")
+                            print(f"Step CSV write error: {write_error}")
                 else:
                     if self.total_packets % 100 == 1:
-                        print(f"Deadband data format error - expected 5 fields, got {len(data_parts)}")
-
+                        print(f"Step data format error - expected 7 fields, got {len(data_parts)}")
+        
         except Exception as e:
-            print(f"Deadband data processing error: {e}")
-
-    def clear_history(self):
-        """Clear history data for new calibration run"""
-        self.deadband_history = {
-            'time': [],
-            'pwm': [],
-            'distance': [],
-            'initial_distance': [],
-            'motion_detected': []
-        }
-        self.calibrated_deadband = 0  # Reset calibrated value
-        print("Deadband history cleared for new calibration")
+            print(f"Step data processing error: {e}")
 
 
 class UDPReceiver:
@@ -1050,14 +739,11 @@ class TrainControlDashboard:
         self.data_manager = data_manager
         self.udp_receiver = udp_receiver
         
-        # Track which experiment mode is active ('pid', 'step', or 'deadband')
+        # Track which experiment mode is active ('pid' or 'step')
         self.experiment_mode = 'pid'  # Default to PID mode
-
+        
         # Create step response data manager
         self.step_data_manager = StepResponseDataManager()
-
-        # Create deadband calibration data manager
-        self.deadband_data_manager = DeadbandDataManager()
         
 
         # Initialize current language from network manager
@@ -1237,29 +923,7 @@ class TrainControlDashboard:
                 'step_test_active': 'Prueba de escalón activa',
                 'step_test_stopped': 'Prueba de escalón detenida',
                 'step_esp32_status': 'Estado ESP32 (Escalón)',
-                'configure_step_first': 'Configure los parámetros del escalón primero',
-
-                # Deadband Calibration
-                'deadband_tab': '🔧 Calibración Deadband',
-                'deadband_title': 'Calibración de Zona Muerta',
-                'deadband_config': 'Configuración de Calibración',
-                'start_calibration': 'Iniciar Calibración',
-                'stop_calibration': 'Detener Calibración',
-                'motion_threshold': 'Umbral de Movimiento (cm)',
-                'deadband_direction': 'Dirección',
-                'calibration_result': 'Resultado de Calibración',
-                'apply_to_pid': 'Aplicar a PID',
-                'deadband_value': 'Valor Deadband',
-                'calibration_in_progress': '🔄 Calibración en progreso...',
-                'calibration_complete': '✓ Calibración completa',
-                'deadband_pwm_graph': 'PWM vs Tiempo',
-                'deadband_distance_graph': 'Distancia vs Tiempo',
-                'deadband_curve_graph': 'Curva de Calibración (PWM vs Distancia)',
-                'pwm_value': 'PWM',
-                'initial_distance': 'Distancia Inicial',
-                'motion_detected': 'Movimiento Detectado',
-                'calibrating': 'Calibrando...',
-                'deadband_applied': '✓ Deadband aplicado al modo PID'
+                'configure_step_first': 'Configure los parámetros del escalón primero'
             },
             'en': {
                 'title': 'Train PID Control System',
@@ -1400,29 +1064,7 @@ class TrainControlDashboard:
                 'step_test_active': 'Step test active',
                 'step_test_stopped': 'Step test stopped',
                 'step_esp32_status': 'ESP32 Status (Step)',
-                'configure_step_first': 'Configure step parameters first',
-
-                # Deadband Calibration
-                'deadband_tab': '🔧 Deadband Calibration',
-                'deadband_title': 'Deadband Calibration',
-                'deadband_config': 'Calibration Configuration',
-                'start_calibration': 'Start Calibration',
-                'stop_calibration': 'Stop Calibration',
-                'motion_threshold': 'Motion Threshold (cm)',
-                'deadband_direction': 'Direction',
-                'calibration_result': 'Calibration Result',
-                'apply_to_pid': 'Apply to PID',
-                'deadband_value': 'Deadband Value',
-                'calibration_in_progress': '🔄 Calibration in progress...',
-                'calibration_complete': '✓ Calibration complete',
-                'deadband_pwm_graph': 'PWM vs Time',
-                'deadband_distance_graph': 'Distance vs Time',
-                'deadband_curve_graph': 'Calibration Curve (PWM vs Distance)',
-                'pwm_value': 'PWM',
-                'initial_distance': 'Initial Distance',
-                'motion_detected': 'Motion Detected',
-                'calibrating': 'Calibrating...',
-                'deadband_applied': '✓ Deadband applied to PID mode'
+                'configure_step_first': 'Configure step parameters first'
             }
         }
 
@@ -1433,8 +1075,7 @@ class TrainControlDashboard:
         print(f"  - UDP receiver data_manager CSV: {self.udp_receiver.data_manager.csv_file}")
 
         # Dashboard configuration with custom CSS
-        # Removed old CodePen CSS that was hiding 5th tab - keeping only Google Fonts
-        external_stylesheets = ['https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap']
+        external_stylesheets = ['https://codepen.io/chriddyp/pen/bWLwgP.css', 'https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap']
         self.app = dash.Dash(__name__, external_stylesheets=external_stylesheets,
                             suppress_callback_exceptions=True)
         
@@ -1729,39 +1370,9 @@ class TrainControlDashboard:
         """Safely switch between PID and Step Response experiment modes"""
         if new_mode == self.experiment_mode:
             return  # Already in the requested mode
-
+        
         print(f"[MODE SWITCH] Switching from {self.experiment_mode} to {new_mode}")
-
-        # Only send MQTT messages if network is configured
-        if self.network_manager.mqtt_broker_ip:
-            try:
-                # CRITICAL FIX: Tell ESP32 to switch modes immediately
-                # This allows ESP32 to accept step parameters before starting experiment
-                if new_mode == 'step':
-                    print("[MODE SWITCH] Telling ESP32 to enter Step Response mode...")
-                    # Stop PID mode first
-                    publish.single(MQTT_TOPICS['sync'], 'False', hostname=self.network_manager.mqtt_broker_ip)
-                    time.sleep(0.3)
-
-                    # FIXED: ESP32 firmware now accepts step parameters regardless of mode
-                    # No need to switch modes or send dummy parameters
-                    # Just request current parameters to populate the status display
-                    print("[MODE SWITCH] Requesting current step parameters from ESP32...")
-                    publish.single(MQTT_TOPICS['step_request_params'], '1', hostname=self.network_manager.mqtt_broker_ip)
-                    time.sleep(0.2)
-                    print("[MODE SWITCH] ESP32 now in STEP_MODE and ready for parameters")
-                else:  # Switching to PID mode
-                    print("[MODE SWITCH] Telling ESP32 to enter PID mode...")
-                    # Stop step mode first
-                    publish.single(MQTT_TOPICS['step_sync'], 'False', hostname=self.network_manager.mqtt_broker_ip)
-                    time.sleep(0.3)
-                    # ESP32 will default back to PID mode
-            except Exception as e:
-                print(f"[MODE SWITCH] Failed to send MQTT commands: {e}")
-                print("[MODE SWITCH] Check network configuration - MQTT broker may not be reachable")
-        else:
-            print("[MODE SWITCH] Network not configured - skipping MQTT commands")
-
+        
         # Stop UDP receiver
         if self.udp_receiver.running:
             print("[MODE SWITCH] Stopping UDP receiver...")
@@ -1840,10 +1451,6 @@ class TrainControlDashboard:
 
     def setup_layout(self):
         """Setup the dashboard layout"""
-        print(f"\n=== CREATING DASHBOARD LAYOUT ===")
-        print(f"Deadband tab translation (ES): {self.translations['es'].get('deadband_tab', 'MISSING')}")
-        print(f"Deadband tab translation (EN): {self.translations['en'].get('deadband_tab', 'MISSING')}")
-
         self.app.layout = html.Div([
 
             dcc.Store(id='language-store', data={'language': 'es'}),
@@ -1942,43 +1549,23 @@ class TrainControlDashboard:
                 ], style={'display': 'flex', 'alignItems': 'center', 'justifyContent': 'center'})
             ]),
 
-            # Tabs - Simple design matching minimal working example (NO custom styles)
+            # Tabs - Compact design
             dcc.Tabs(id='main-tabs', value='control-tab', children=[
                 dcc.Tab(label=self.t('network_tab'), value='network-tab'),
-                dcc.Tab(label=self.t('deadband_tab'), value='deadband-tab'),
                 dcc.Tab(label=self.t('control_tab'), value='control-tab'),
                 dcc.Tab(label=self.t('step_response_tab'), value='step-response-tab'),
                 dcc.Tab(label=self.t('data_tab'), value='data-tab')
-            ]),
+            ], style={'marginBottom': '12px', 'height': '36px'}, content_style={'padding': '12px'}),
 
             # Experiment mode store
             dcc.Store(id='experiment-mode-store', data={'mode': 'pid'}),
-
-            # Interval to trigger dropdown population on page load (fires once)
-            dcc.Interval(id='page-load-trigger', interval=100, n_intervals=0, max_intervals=1),
-
+            
             # Tab content
             html.Div(id='tab-content')
         ], style={'backgroundColor': self.colors['background'], 'minHeight': '100vh', 'padding': '16px'})
 
-        print(f"Layout created with 5 tabs:")
-        print(f"  1. {self.t('network_tab')}")
-        print(f"  2. {self.t('deadband_tab')} ← MOVED TO POSITION 2")
-        print(f"  3. {self.t('control_tab')}")
-        print(f"  4. {self.t('step_response_tab')}")
-        print(f"  5. {self.t('data_tab')}")
-        print(f"=== LAYOUT COMPLETE ===\n")
-
     def create_network_tab(self):
         """Create network configuration tab content"""
-        # Force fresh interface detection when creating the tab
-        print("\n[CREATE_NETWORK_TAB] Re-detecting interfaces for dropdown...")
-        self.network_manager.detect_interfaces()
-        current_options = self.network_manager.get_interface_options()
-        print(f"[CREATE_NETWORK_TAB] Got {len(current_options)} options for dropdown:")
-        for opt in current_options:
-            print(f"[CREATE_NETWORK_TAB]   - {opt['label']} = {opt['value']}")
-
         return html.Div([
             html.H3(self.t('network_config'), style={'color': self.colors['text']}),
 
@@ -2000,8 +1587,8 @@ class TrainControlDashboard:
                           style={'fontWeight': 'bold', 'color': self.colors['text']}),
                 dcc.Dropdown(
                     id='interface-dropdown',
-                    options=current_options,
-                    value=self.network_manager.selected_ip if self.network_manager.selected_ip else None,
+                    options=self.network_manager.get_interface_options(),
+                    value=None,
                     placeholder=self.t('select_interface_placeholder'),
                     style={'marginBottom': '10px'}
                 ),
@@ -2151,29 +1738,7 @@ class TrainControlDashboard:
                         html.Div(id='connection-status-indicator', style={'marginBottom': '10px'}),
                         html.Div(id='data-status', style={'color': self.colors['text_light'], 'fontSize': '14px'})
                     ], style={'background': 'white', 'padding': '20px', 'borderRadius': '12px',
-                             'boxShadow': '0 2px 8px rgba(0,0,0,0.1)', 'marginBottom': '20px'}),
-
-                    # Download CSV Button
-                    html.Div([
-                        html.Button(
-                            self.t('download_csv'),
-                            id='download-csv-btn-control',
-                            n_clicks=0,
-                            style={
-                                'width': '100%',
-                                'backgroundColor': self.colors['accent'],
-                                'color': 'white',
-                                'border': 'none',
-                                'padding': '10px 16px',
-                                'borderRadius': '6px',
-                                'fontSize': '14px',
-                                'cursor': 'pointer',
-                                'fontWeight': '500'
-                            }
-                        ),
-                        dcc.Download(id="download-csv-file-control")
-                    ], style={'background': 'white', 'padding': '15px', 'borderRadius': '8px',
-                             'boxShadow': '0 1px 4px rgba(0,0,0,0.1)'})
+                             'boxShadow': '0 2px 8px rgba(0,0,0,0.1)', 'marginBottom': '20px'})
 
                 ], style={'width': '35%', 'paddingRight': '20px'}),
 
@@ -2306,10 +1871,10 @@ class TrainControlDashboard:
                             dcc.RadioItems(
                                 id='direction-radio',
                                 options=[
-                                    {'label': f"  {self.t('forward')}", 'value': 1},
-                                    {'label': f"  {self.t('reverse')}", 'value': 0}
+                                    {'label': f"  {self.t('forward')}", 'value': 0},
+                                    {'label': f"  {self.t('reverse')}", 'value': 1}
                                 ],
-                                value=1,
+                                value=0,
                                 inline=True,
                                 style={'fontSize': '13px'},
                                 labelStyle={'marginRight': '20px', 'cursor': 'pointer'}
@@ -2329,40 +1894,17 @@ class TrainControlDashboard:
                         
                         # ESP32 Status Display
                         html.Div([
-                            html.H5(self.t('step_esp32_status'),
+                            html.H5(self.t('step_esp32_status'), 
                                    style={'fontSize': '12px', 'marginBottom': '8px', 'color': self.colors['text']}),
                             html.Div(id='step-esp32-status',
                                    style={'fontSize': '11px', 'padding': '8px', 'backgroundColor': '#f8f9fa',
                                          'borderRadius': '4px', 'minHeight': '50px'})
-                        ], style={'marginBottom': '15px'})
-
-                    ], style={'background': 'white', 'padding': '15px', 'borderRadius': '8px',
-                             'boxShadow': '0 1px 4px rgba(0,0,0,0.1)', 'marginBottom': '15px'}),
-
-                    # Download CSV Button
-                    html.Div([
-                        html.Button(
-                            self.t('download_csv'),
-                            id='download-csv-btn-step',
-                            n_clicks=0,
-                            style={
-                                'width': '100%',
-                                'backgroundColor': self.colors['accent'],
-                                'color': 'white',
-                                'border': 'none',
-                                'padding': '10px 16px',
-                                'borderRadius': '6px',
-                                'fontSize': '14px',
-                                'cursor': 'pointer',
-                                'fontWeight': '500'
-                            }
-                        ),
-                        dcc.Download(id="download-csv-file-step")
+                        ])
+                        
                     ], style={'background': 'white', 'padding': '15px', 'borderRadius': '8px',
                              'boxShadow': '0 1px 4px rgba(0,0,0,0.1)'})
-
                 ], style={'width': '35%', 'paddingRight': '20px'}),
-
+                
                 # Right column - Graph
                 html.Div([
                     html.Div([
@@ -2378,151 +1920,6 @@ class TrainControlDashboard:
                 
             ], style={'display': 'flex', 'gap': '20px'})
         ])
-
-    def create_deadband_tab(self):
-        """Create deadband calibration tab"""
-        return html.Div([
-        html.H3(self.t('deadband_title'), style={'color': self.colors['text'], 'marginBottom': '20px'}),
-
-        html.Div([
-            # Left column - Configuration Panel
-            html.Div([
-                html.Div([
-                    html.H4(self.t('deadband_config'),
-                           style={'color': self.colors['primary'], 'marginBottom': '15px', 'fontSize': '16px'}),
-
-                    # Direction
-                    html.Div([
-                        html.Label(f"{self.t('deadband_direction')}:",
-                                 style={'fontWeight': '500', 'fontSize': '13px', 'marginBottom': '8px',
-                                       'display': 'block'}),
-                        dcc.RadioItems(
-                            id='deadband-direction-radio',
-                            options=[
-                                {'label': f"  {self.t('forward')}", 'value': 1},
-                                {'label': f"  {self.t('reverse')}", 'value': 0}
-                            ],
-                            value=1,
-                            inline=True,
-                            style={'fontSize': '13px'},
-                            labelStyle={'marginRight': '20px', 'cursor': 'pointer'}
-                        )
-                    ], style={'marginBottom': '15px', 'padding': '10px', 'backgroundColor': '#f8f9fa',
-                             'borderRadius': '6px'}),
-
-                    # Motion Threshold
-                    html.Div([
-                        html.Label(f"{self.t('motion_threshold')}:",
-                                 style={'fontWeight': '500', 'fontSize': '13px', 'marginBottom': '8px',
-                                       'display': 'block'}),
-                        dcc.Input(id='deadband-threshold-input', type='number',
-                                value=0.08, min=0.01, max=1.0, step=0.01,
-                                style={'width': '80px', 'height': '28px', 'fontSize': '12px',
-                                      'padding': '4px'})
-                    ], style={'marginBottom': '15px', 'padding': '10px', 'backgroundColor': '#f8f9fa',
-                             'borderRadius': '6px'}),
-
-                    # Start/Stop Buttons
-                    html.Div([
-                        html.Button(self.t('start_calibration'), id='deadband-start-btn', n_clicks=0,
-                                  style={'backgroundColor': '#28A745', 'color': 'white', 'padding': '10px 20px',
-                                        'border': 'none', 'borderRadius': '6px', 'fontSize': '14px',
-                                        'cursor': 'pointer', 'marginRight': '10px'}),
-                        html.Button(self.t('stop_calibration'), id='deadband-stop-btn', n_clicks=0,
-                                  style={'backgroundColor': '#DC3545', 'color': 'white', 'padding': '10px 20px',
-                                        'border': 'none', 'borderRadius': '6px', 'fontSize': '14px',
-                                        'cursor': 'pointer'})
-                    ], style={'marginBottom': '20px'}),
-
-                    # Status Display
-                    html.Div(id='deadband-status',
-                           style={'fontSize': '13px', 'padding': '12px', 'backgroundColor': '#f8f9fa',
-                                 'borderRadius': '6px', 'marginBottom': '15px', 'minHeight': '60px'}),
-
-                    # Result Display
-                    html.Div([
-                        html.H5(self.t('calibration_result'),
-                               style={'fontSize': '14px', 'marginBottom': '10px', 'color': self.colors['text']}),
-                        html.Div(id='deadband-result',
-                               style={'fontSize': '32px', 'fontWeight': 'bold', 'color': '#28A745',
-                                     'textAlign': 'center', 'padding': '20px', 'backgroundColor': '#f8f9fa',
-                                     'borderRadius': '6px', 'marginBottom': '15px'}),
-                        html.Button(self.t('apply_to_pid'), id='deadband-apply-btn', n_clicks=0,
-                                  disabled=True,
-                                  style={'width': '100%', 'padding': '10px', 'backgroundColor': '#007BFF',
-                                        'color': 'white', 'border': 'none', 'borderRadius': '6px',
-                                        'fontSize': '14px', 'cursor': 'pointer'})
-                    ], style={'marginBottom': '15px'})
-
-                ], style={'background': 'white', 'padding': '15px', 'borderRadius': '8px',
-                         'boxShadow': '0 1px 4px rgba(0,0,0,0.1)', 'marginBottom': '15px'}),
-
-                # Download CSV Button
-                html.Div([
-                    html.Button(
-                        self.t('download_csv'),
-                        id='download-csv-btn-deadband',
-                        n_clicks=0,
-                        style={
-                            'width': '100%',
-                            'backgroundColor': self.colors['accent'],
-                            'color': 'white',
-                            'border': 'none',
-                            'padding': '10px 16px',
-                            'borderRadius': '6px',
-                            'fontSize': '14px',
-                            'cursor': 'pointer',
-                            'fontWeight': '500'
-                        }
-                    ),
-                    dcc.Download(id="download-csv-file-deadband")
-                ], style={'background': 'white', 'padding': '15px', 'borderRadius': '8px',
-                         'boxShadow': '0 1px 4px rgba(0,0,0,0.1)'})
-
-            ], style={'width': '35%', 'paddingRight': '20px'}),
-
-            # Right column - Graphs
-            html.Div([
-                # PWM vs Time
-                html.Div([
-                    html.H4(self.t('deadband_pwm_graph'),
-                           style={'textAlign': 'center', 'color': self.colors['primary'],
-                                 'marginBottom': '8px', 'fontSize': '14px'}),
-                    dcc.Graph(id='deadband-pwm-graph',
-                             figure=px.line(),
-                             style={'height': '250px'})
-                ], style={'background': 'white', 'padding': '12px', 'borderRadius': '8px',
-                         'boxShadow': '0 1px 4px rgba(0,0,0,0.1)', 'marginBottom': '15px'}),
-
-                # Distance vs Time
-                html.Div([
-                    html.H4(self.t('deadband_distance_graph'),
-                           style={'textAlign': 'center', 'color': self.colors['primary'],
-                                 'marginBottom': '8px', 'fontSize': '14px'}),
-                    dcc.Graph(id='deadband-distance-graph',
-                             figure=px.line(),
-                             style={'height': '250px'})
-                ], style={'background': 'white', 'padding': '12px', 'borderRadius': '8px',
-                         'boxShadow': '0 1px 4px rgba(0,0,0,0.1)', 'marginBottom': '15px'}),
-
-                # Calibration Curve
-                html.Div([
-                    html.H4(self.t('deadband_curve_graph'),
-                           style={'textAlign': 'center', 'color': self.colors['primary'],
-                                 'marginBottom': '8px', 'fontSize': '14px'}),
-                    dcc.Graph(id='deadband-curve-graph',
-                             figure=px.line(),
-                             style={'height': '300px'})
-                ], style={'background': 'white', 'padding': '12px', 'borderRadius': '8px',
-                         'boxShadow': '0 1px 4px rgba(0,0,0,0.1)'})
-
-            ], style={'width': '65%'})
-
-        ], style={'display': 'flex', 'gap': '20px'}),
-
-        # Update interval for deadband graphs
-        dcc.Interval(id='graph-update-interval', interval=500, n_intervals=0)
-    ])
 
     def setup_callbacks(self):
         """Setup all dashboard callbacks"""
@@ -2549,15 +1946,9 @@ class TrainControlDashboard:
         )
         def update_mode_indicator(active_tab, language_data):
             """Update the mode indicator badge based on active tab"""
-            if active_tab == 'step-response-tab':
-                mode_text = 'Step Response'
-                badge_color = '#28A745'
-            elif active_tab == 'deadband-tab':
-                mode_text = 'Deadband Cal'
-                badge_color = '#FFA500'  # Orange
-            else:
-                mode_text = 'PID Control'
-                badge_color = '#007BFF'  # Green for step, blue for PID
+            is_step = active_tab == 'step-response-tab'
+            mode_text = 'Step Response' if is_step else 'PID Control'
+            badge_color = '#28A745' if is_step else '#007BFF'  # Green for step, blue for PID
             
             return html.Span(mode_text, style={
                 'backgroundColor': badge_color,
@@ -2594,7 +1985,6 @@ class TrainControlDashboard:
                 self.t('stop_experiment'),
                 [
                     dcc.Tab(label=self.t('network_tab'), value='network-tab'),
-                    dcc.Tab(label=self.t('deadband_tab'), value='deadband-tab'),
                     dcc.Tab(label=self.t('control_tab'), value='control-tab'),
                     dcc.Tab(label=self.t('step_response_tab'), value='step-response-tab'),
                     dcc.Tab(label=self.t('data_tab'), value='data-tab')
@@ -2656,12 +2046,10 @@ class TrainControlDashboard:
              Input('language-store', 'data')]
         )
         def render_tab_content(active_tab, language_data):
-            print(f"\n[RENDER_TAB] Switching to tab: {active_tab}")
             if language_data:
                 self.current_language = language_data.get('language', 'en')
 
             if active_tab == 'network-tab':
-                print("[RENDER_TAB] Creating network tab...")
                 return self.create_network_tab()
             elif active_tab == 'control-tab':
                 return self.create_control_tab()
@@ -2669,8 +2057,6 @@ class TrainControlDashboard:
                 return self.create_data_tab()
             elif active_tab == 'step-response-tab':
                 return self.create_step_response_tab()
-            elif active_tab == 'deadband-tab':
-                return self.create_deadband_tab()
             return html.Div(self.t('tab_not_found'))
 
         # Network configuration callbacks
@@ -2750,27 +2136,12 @@ class TrainControlDashboard:
 
             return self.t('select_an_interface'), self.t('no_interface_selected'), self.t('configure_network_settings_above')
 
-        # Populate dropdown on page load and when refresh button is clicked
         @self.app.callback(
             [Output('interface-dropdown', 'options'),
              Output('interface-dropdown', 'value')],
-            [Input('page-load-trigger', 'n_intervals'),
-             Input('main-tabs', 'value'),
-             Input('refresh-interfaces-btn', 'n_clicks')]
+            Input('refresh-interfaces-btn', 'n_clicks')
         )
-        def populate_interface_dropdown(n_intervals, tab_value, n_clicks):
-            ctx = callback_context
-            if ctx.triggered:
-                trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
-                if trigger_id == 'refresh-interfaces-btn':
-                    print("[CALLBACK] Refresh button clicked, re-detecting...")
-                elif trigger_id == 'page-load-trigger':
-                    print("[CALLBACK] Page loaded, populating dropdown...")
-                else:
-                    print(f"[CALLBACK] Tab changed to {tab_value}, updating dropdown...")
-            else:
-                print("[CALLBACK] Populating interface dropdown (initial)...")
-
+        def refresh_interface_options(n_clicks):
             options = self.network_manager.get_interface_options()
             # Set default value to saved IP if available and still exists
             default_value = None
@@ -2778,7 +2149,6 @@ class TrainControlDashboard:
                 available_ips = [opt['value'] for opt in options]
                 if self.network_manager.selected_ip in available_ips:
                     default_value = self.network_manager.selected_ip
-            print(f"[CALLBACK] Returning {len(options)} options, default_value={default_value}")
             return options, default_value
 
         @self.app.callback(
@@ -2793,8 +2163,7 @@ class TrainControlDashboard:
         @self.app.callback(
             Output('experiment-status-top', 'children'),
             [Input('start-experiment-btn', 'n_clicks'),
-             Input('stop-experiment-btn', 'n_clicks')],
-            prevent_initial_call=True
+             Input('stop-experiment-btn', 'n_clicks')]
         )
         def handle_experiment_control(start_clicks, stop_clicks):
             ctx = callback_context
@@ -2802,7 +2171,7 @@ class TrainControlDashboard:
             if ctx.triggered:
                 trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
 
-                if trigger_id == 'start-experiment-btn' and start_clicks:
+                if trigger_id == 'start-experiment-btn':
                     if self.network_manager.selected_ip:
                         # Determine which experiment mode based on active tab
                         if self.experiment_mode == 'step':
@@ -2860,19 +2229,17 @@ class TrainControlDashboard:
                     else:
                         return html.Div(self.t('configure_network_warning'), style={'color': self.colors['danger']})
 
-                elif trigger_id == 'stop-experiment-btn' and stop_clicks:
+                elif trigger_id == 'stop-experiment-btn':
                     if self.experiment_mode == 'step':
                         self.step_data_manager.stop_experiment()
                         publish.single(MQTT_TOPICS['step_sync'], 'False', hostname=self.network_manager.mqtt_broker_ip)
                         print("[STEP STOP] Stopped step response experiment")
-                        return html.Div(self.t('experiment_stopped'), style={'color': self.colors['danger']})
                     else:
                         self.data_manager.stop_experiment()
                         publish.single(MQTT_TOPICS['sync'], 'False', hostname=self.network_manager.mqtt_broker_ip)
                         print("[PID STOP] Stopped PID experiment")
-                        return html.Div(self.t('experiment_stopped'), style={'color': self.colors['danger']})
 
-            return html.Div(self.t('ready_to_start'), style={'color': self.colors['text']})
+            return self.t('ready_to_start')
 
         # PID parameter callbacks - sliders send immediately, inputs need button clicks
         @self.app.callback(
@@ -3131,70 +2498,29 @@ class TrainControlDashboard:
                 return f"{active_csv} ({file_size} bytes)"
             return self.t('configure_network_enable_logging')
 
-        # CSV download callbacks - one for each tab
-        def create_download_callback():
-            """Shared download logic for all tabs"""
-            # Find the active CSV file (either PID or Step Response mode)
-            pid_files = glob.glob("experiment_*.csv")
-            step_files = glob.glob("step_response_*.csv")
-            all_csv_files = pid_files + step_files
-
-            if all_csv_files:
-                # Get the most recently modified CSV file
-                active_csv = max(all_csv_files, key=os.path.getmtime)
-                file_size = os.path.getsize(active_csv)
-
-                # Only download if file has data (more than just headers)
-                if file_size > 100:  # Has more than just headers
-                    print(f"[DOWNLOAD] Sending CSV file: {active_csv} ({file_size} bytes)")
-                    return dcc.send_file(active_csv)
-                else:
-                    # File exists but is empty - no data to download
-                    print(f"[DOWNLOAD] CSV file empty: {active_csv}")
-                    return None
-            else:
-                # No CSV files found
-                print("[DOWNLOAD] No CSV files found")
-                return None
-
-        @self.app.callback(
-            Output("download-csv-file-control", "data"),
-            Input("download-csv-btn-control", "n_clicks"),
-            prevent_initial_call=True
-        )
-        def download_csv_control(n_clicks):
-            if n_clicks:
-                return create_download_callback()
-            return None
-
-        @self.app.callback(
-            Output("download-csv-file-step", "data"),
-            Input("download-csv-btn-step", "n_clicks"),
-            prevent_initial_call=True
-        )
-        def download_csv_step(n_clicks):
-            if n_clicks:
-                return create_download_callback()
-            return None
-
-        @self.app.callback(
-            Output("download-csv-file-deadband", "data"),
-            Input("download-csv-btn-deadband", "n_clicks"),
-            prevent_initial_call=True
-        )
-        def download_csv_deadband(n_clicks):
-            if n_clicks:
-                return create_download_callback()
-            return None
-
+        # CSV download callback
         @self.app.callback(
             Output("download-csv-file", "data"),
             Input("download-csv-btn", "n_clicks"),
             prevent_initial_call=True
         )
-        def download_csv_data_tab(n_clicks):
+        def download_csv(n_clicks):
             if n_clicks:
-                return create_download_callback()
+                # Find the active CSV file
+                csv_files = glob.glob("experiment_*.csv")
+                if csv_files:
+                    active_csv = max(csv_files, key=os.path.getmtime)
+                    file_size = os.path.getsize(active_csv)
+
+                    # Only download if file has data (more than just headers)
+                    if file_size > 100:  # Has more than just headers
+                        return dcc.send_file(active_csv)
+                    else:
+                        # File exists but is empty - no data to download
+                        return None
+                else:
+                    # No CSV files found
+                    return None
             return None
 
 
@@ -3218,41 +2544,30 @@ class TrainControlDashboard:
             
             if ctx.triggered:
                 trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
-
-                # Only log actual parameter changes, not refresh intervals
-                if trigger_id != 'mqtt-status-refresh':
-                    print(f"[STEP PARAM] Callback triggered by: {trigger_id}")
-
+                
                 # Send MQTT updates
                 if self.network_manager.selected_ip:
                     try:
                         if trigger_id == 'amplitude-slider':
-                            publish.single(MQTT_TOPICS['step_amplitude'], str(amp_slider),
+                            publish.single(MQTT_TOPICS['step_amplitude'], amp_slider, 
                                          hostname=self.network_manager.mqtt_broker_ip)
-                            print(f"[STEP PARAM] Sent amplitude = {amp_slider}")
                         elif trigger_id == 'amplitude-send-btn' and amp_input is not None:
-                            publish.single(MQTT_TOPICS['step_amplitude'], str(amp_input),
+                            publish.single(MQTT_TOPICS['step_amplitude'], amp_input, 
                                          hostname=self.network_manager.mqtt_broker_ip)
-                            print(f"[STEP PARAM] Sent amplitude = {amp_input}")
                         elif trigger_id == 'duration-slider':
-                            publish.single(MQTT_TOPICS['step_time'], str(dur_slider),
+                            publish.single(MQTT_TOPICS['step_time'], dur_slider,
                                          hostname=self.network_manager.mqtt_broker_ip)
-                            print(f"[STEP PARAM] Sent time = {dur_slider}")
                         elif trigger_id == 'duration-send-btn' and dur_input is not None:
-                            publish.single(MQTT_TOPICS['step_time'], str(dur_input),
+                            publish.single(MQTT_TOPICS['step_time'], dur_input,
                                          hostname=self.network_manager.mqtt_broker_ip)
-                            print(f"[STEP PARAM] Sent time = {dur_input}")
                         elif trigger_id == 'vbatt-slider':
-                            publish.single(MQTT_TOPICS['step_vbatt'], str(vbatt),
+                            publish.single(MQTT_TOPICS['step_vbatt'], vbatt,
                                          hostname=self.network_manager.mqtt_broker_ip)
-                            print(f"[STEP PARAM] Sent vbatt = {vbatt}")
                         elif trigger_id == 'direction-radio':
                             publish.single(MQTT_TOPICS['step_direction'], direction,
                                          hostname=self.network_manager.mqtt_broker_ip)
-                            print(f"[STEP PARAM] Sent direction = {direction}")
                     except Exception as e:
-                        print(f"[STEP PARAM ERROR] Failed to send {trigger_id}: {e}")
-                        pass  # Handle MQTT errors
+                        pass  # Silently handle MQTT errors
             
             # ESP32 status
             if not self.network_manager.selected_ip:
@@ -3351,354 +2666,6 @@ class TrainControlDashboard:
                 )
                 return fig
 
-        # =====================================================================
-        # Deadband Calibration Callbacks
-        # =====================================================================
-
-        @self.app.callback(
-            [Output('deadband-status', 'children'),
-             Output('deadband-result', 'children'),
-             Output('deadband-apply-btn', 'disabled')],
-            [Input('deadband-start-btn', 'n_clicks'),
-             Input('deadband-stop-btn', 'n_clicks'),
-             Input('graph-update-interval', 'n_intervals')],
-            [State('deadband-direction-radio', 'value'),
-             State('deadband-threshold-input', 'value')],
-            prevent_initial_call=True
-        )
-        def handle_deadband_calibration(start_clicks, stop_clicks, n_intervals,
-                                        direction, threshold):
-            """Handle deadband calibration start/stop and status updates"""
-            ctx = callback_context
-        
-            if not ctx.triggered:
-                raise PreventUpdate
-        
-            trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
-        
-            # Check network configuration
-            if not self.network_manager.selected_ip:
-                return (html.Div(self.t('configure_network_warning'),
-                                style={'color': '#DC3545'}),
-                        "", True)
-        
-            # Start calibration
-            if trigger_id == 'deadband-start-btn' and start_clicks > 0:
-                try:
-                    # Switch to deadband data manager
-                    self.experiment_mode = 'deadband'
-                    self.udp_receiver.set_data_manager(self.deadband_data_manager)
-        
-                    # Clear previous calibration data
-                    self.deadband_data_manager.clear_history()
-        
-                    # Create new CSV file
-                    csv_path = self.deadband_data_manager.create_deadband_csv()
-                    print(f"Deadband calibration CSV: {csv_path}")
-        
-                    # Send configuration via MQTT
-                    publish.single(MQTT_TOPICS['deadband_direction'], str(direction),
-                                 hostname=self.network_manager.mqtt_broker_ip)
-                    time.sleep(0.05)
-                    publish.single(MQTT_TOPICS['deadband_threshold'], str(threshold),
-                                 hostname=self.network_manager.mqtt_broker_ip)
-                    time.sleep(0.05)
-
-                    # Start calibration
-                    publish.single(MQTT_TOPICS['deadband_sync'], "True",
-                                 hostname=self.network_manager.mqtt_broker_ip)
-        
-                    return (html.Div(self.t('calibration_in_progress'),
-                                    style={'color': '#FFA500'}),
-                            "", True)
-        
-                except Exception as e:
-                    return (html.Div(f"Error: {str(e)}", style={'color': '#DC3545'}),
-                            "", True)
-        
-            # Stop calibration
-            elif trigger_id == 'deadband-stop-btn' and stop_clicks > 0:
-                try:
-                    publish.single(MQTT_TOPICS['deadband_sync'], "False",
-                                 hostname=self.network_manager.mqtt_broker_ip)
-        
-                    return (html.Div(self.t('calibration_complete'),
-                                    style={'color': '#28A745'}),
-                            f"{self.deadband_data_manager.calibrated_deadband} PWM",
-                            False if self.deadband_data_manager.calibrated_deadband > 0 else True)
-        
-                except Exception as e:
-                    return (html.Div(f"Error: {str(e)}", style={'color': '#DC3545'}),
-                            "", True)
-        
-            # Status updates (check for calibration result)
-            elif trigger_id == 'graph-update-interval':
-                # Check if calibration has completed
-                if self.deadband_data_manager.calibrated_deadband > 0:
-                    return (html.Div(self.t('calibration_complete'),
-                                    style={'color': '#28A745'}),
-                            f"{self.deadband_data_manager.calibrated_deadband} PWM",
-                            False)
-                elif len(self.deadband_data_manager.deadband_history['pwm']) > 0:
-                    # Calibration in progress
-                    current_pwm = self.deadband_data_manager.deadband_history['pwm'][-1]
-                    return (html.Div(f"{self.t('calibrating')} PWM: {current_pwm}",
-                                    style={'color': '#FFA500'}),
-                            "", True)
-        
-            raise PreventUpdate
-        
-        
-        # ==========================
-        # CALLBACK 2: Apply Deadband to PID
-        # ==========================
-        
-        @self.app.callback(
-            Output('deadband-status', 'children', allow_duplicate=True),
-            Input('deadband-apply-btn', 'n_clicks'),
-            State('deadband-result', 'children'),
-            prevent_initial_call=True
-        )
-        def apply_deadband_to_pid(n_clicks, result_text):
-            """Apply calibrated deadband value to PID mode"""
-            if n_clicks > 0 and result_text:
-                try:
-                    # Send apply command via MQTT
-                    publish.single(MQTT_TOPICS['deadband_apply'], "True",
-                                 hostname=self.network_manager.mqtt_broker_ip)
-        
-                    return html.Div(self.t('deadband_applied'),
-                                   style={'color': '#28A745', 'fontWeight': 'bold'})
-        
-                except Exception as e:
-                    return html.Div(f"Error applying deadband: {str(e)}",
-                                   style={'color': '#DC3545'})
-        
-            raise PreventUpdate
-        
-        
-        # ==========================
-        # CALLBACK 3: Update PWM vs Time Graph
-        # ==========================
-        
-        @self.app.callback(
-            Output('deadband-pwm-graph', 'figure'),
-            Input('graph-update-interval', 'n_intervals')
-        )
-        def update_deadband_pwm_graph(n):
-            """Update PWM vs Time graph"""
-            try:
-                data = self.deadband_data_manager.deadband_history
-        
-                if len(data['time']) == 0:
-                    # No data yet
-                    fig = px.line()
-                    fig.update_layout(
-                        title=self.t('deadband_pwm_graph'),
-                        xaxis_title=self.t('time') + ' (ms)',
-                        yaxis_title='PWM',
-                        template='plotly_white'
-                    )
-                    return fig
-        
-                fig = go.Figure()
-        
-                # PWM trace
-                fig.add_trace(go.Scatter(
-                    x=data['time'],
-                    y=data['pwm'],
-                    mode='lines',
-                    name='PWM',
-                    line=dict(color='blue', width=2)
-                ))
-        
-                # Mark motion detection point
-                if 1 in data['motion_detected']:
-                    idx = data['motion_detected'].index(1)
-                    fig.add_trace(go.Scatter(
-                        x=[data['time'][idx]],
-                        y=[data['pwm'][idx]],
-                        mode='markers+text',
-                        name=self.t('motion_detected'),
-                        marker=dict(color='red', size=15, symbol='star'),
-                        text=[f"PWM={data['pwm'][idx]}"],
-                        textposition='top center'
-                    ))
-        
-                fig.update_layout(
-                    title=self.t('deadband_pwm_graph'),
-                    xaxis_title=self.t('time') + ' (ms)',
-                    yaxis_title='PWM',
-                    hovermode='x unified',
-                    template='plotly_white',
-                    showlegend=True
-                )
-        
-                return fig
-        
-            except Exception as e:
-                print(f"Error updating PWM graph: {e}")
-                return px.line()
-        
-        
-        # ==========================
-        # CALLBACK 4: Update Distance vs Time Graph
-        # ==========================
-        
-        @self.app.callback(
-            Output('deadband-distance-graph', 'figure'),
-            Input('graph-update-interval', 'n_intervals')
-        )
-        def update_deadband_distance_graph(n):
-            """Update Distance vs Time graph"""
-            try:
-                data = self.deadband_data_manager.deadband_history
-        
-                if len(data['time']) == 0:
-                    fig = px.line()
-                    fig.update_layout(
-                        title=self.t('deadband_distance_graph'),
-                        xaxis_title=self.t('time') + ' (ms)',
-                        yaxis_title=self.t('distance_cm'),
-                        template='plotly_white'
-                    )
-                    return fig
-        
-                fig = go.Figure()
-        
-                # Distance trace
-                fig.add_trace(go.Scatter(
-                    x=data['time'],
-                    y=data['distance'],
-                    mode='lines',
-                    name=self.t('distance_cm'),
-                    line=dict(color='green', width=2)
-                ))
-        
-                # Initial distance reference line
-                if len(data['initial_distance']) > 0:
-                    fig.add_trace(go.Scatter(
-                        x=data['time'],
-                        y=data['initial_distance'],
-                        mode='lines',
-                        name=self.t('initial_distance'),
-                        line=dict(color='gray', width=1, dash='dash')
-                    ))
-        
-                    # Motion threshold bands
-                    threshold = 0.08  # Get from UI state if needed
-                    initial = data['initial_distance'][0]
-                    fig.add_hrect(
-                        y0=initial - threshold,
-                        y1=initial + threshold,
-                        fillcolor="yellow",
-                        opacity=0.2,
-                        line_width=0,
-                        annotation_text=self.t('motion_threshold')
-                    )
-        
-                # Mark motion detection point
-                if 1 in data['motion_detected']:
-                    idx = data['motion_detected'].index(1)
-                    fig.add_trace(go.Scatter(
-                        x=[data['time'][idx]],
-                        y=[data['distance'][idx]],
-                        mode='markers',
-                        name=self.t('motion_detected'),
-                        marker=dict(color='red', size=12, symbol='star')
-                    ))
-        
-                fig.update_layout(
-                    title=self.t('deadband_distance_graph'),
-                    xaxis_title=self.t('time') + ' (ms)',
-                    yaxis_title=self.t('distance_cm'),
-                    hovermode='x unified',
-                    template='plotly_white',
-                    showlegend=True
-                )
-        
-                return fig
-        
-            except Exception as e:
-                print(f"Error updating distance graph: {e}")
-                return px.line()
-        
-        
-        # ==========================
-        # CALLBACK 5: Update Calibration Curve (PWM vs Distance)
-        # ==========================
-        
-        @self.app.callback(
-            Output('deadband-curve-graph', 'figure'),
-            Input('graph-update-interval', 'n_intervals')
-        )
-        def update_deadband_curve_graph(n):
-            """Update PWM vs Distance calibration curve"""
-            try:
-                data = self.deadband_data_manager.deadband_history
-        
-                if len(data['pwm']) == 0:
-                    fig = px.line()
-                    fig.update_layout(
-                        title=self.t('deadband_curve_graph'),
-                        xaxis_title='PWM',
-                        yaxis_title=self.t('distance_cm'),
-                        template='plotly_white'
-                    )
-                    return fig
-        
-                fig = go.Figure()
-        
-                # Main calibration curve
-                fig.add_trace(go.Scatter(
-                    x=data['pwm'],
-                    y=data['distance'],
-                    mode='lines+markers',
-                    name=self.t('calibration_result'),
-                    line=dict(color='purple', width=2),
-                    marker=dict(size=4)
-                ))
-        
-                # Mark deadband point
-                if 1 in data['motion_detected']:
-                    idx = data['motion_detected'].index(1)
-                    deadband_pwm = data['pwm'][idx]
-                    deadband_distance = data['distance'][idx]
-        
-                    fig.add_trace(go.Scatter(
-                        x=[deadband_pwm],
-                        y=[deadband_distance],
-                        mode='markers+text',
-                        name=f'Deadband = {deadband_pwm}',
-                        marker=dict(color='red', size=15, symbol='star'),
-                        text=[f'{deadband_pwm}'],
-                        textposition='top center'
-                    ))
-        
-                    # Vertical line at deadband
-                    fig.add_vline(
-                        x=deadband_pwm,
-                        line_dash="dash",
-                        line_color="red",
-                        annotation_text=f"Deadband: {deadband_pwm} PWM",
-                        annotation_position="top"
-                    )
-        
-                fig.update_layout(
-                    title=self.t('deadband_curve_graph'),
-                    xaxis_title='PWM',
-                    yaxis_title=self.t('distance_cm'),
-                    hovermode='closest',
-                    template='plotly_white',
-                    showlegend=True
-                )
-        
-                return fig
-        
-            except Exception as e:
-                print(f"Error updating curve graph: {e}")
-                return px.line()
-
     def _get_step_parameter_status_display(self):
         """Display confirmed step response parameters from ESP32"""
         if not hasattr(self, 'mqtt_sync') or not self.mqtt_sync:
@@ -3711,8 +2678,8 @@ class TrainControlDashboard:
         if has_confirmed:
             amp = f"{confirmed['amplitude']:.1f}" if confirmed['amplitude'] is not None else "?"
             time_val = f"{confirmed['time']:.1f}" if confirmed['time'] is not None else "?"
-            # Direction: ESP32 firmware has 1=Forward, 0=Reverse
-            direction = self.t('forward') if confirmed['direction'] == 1 else self.t('reverse')
+            # Swap direction display: ESP32 direction 0 = forward (due to inverted wiring)
+            direction = self.t('forward') if confirmed['direction'] == 0 else self.t('reverse')
             vbatt = f"{confirmed['vbatt']:.1f}" if confirmed['vbatt'] is not None else "?"
             
             return html.Div([
@@ -3730,9 +2697,9 @@ class TrainControlDashboard:
                            style={'color': self.colors['warning'], 'fontSize': '11px'})
 
 
-    def run(self, host='127.0.0.1', port=8050, debug=True, use_reloader=True):
+    def run(self, host='127.0.0.1', port=8050, debug=True):
         """Run the dashboard"""
-        self.app.run(host=host, port=port, debug=debug, use_reloader=use_reloader)
+        self.app.run(host=host, port=port, debug=debug)
 
 # Global instances
 network_manager = NetworkManager()
@@ -3751,10 +2718,7 @@ print(f"  - UDP receiver data_manager: {id(udp_receiver.data_manager)}")
 print(f"  - Dashboard data_manager: {id(dashboard.data_manager)}")
 
 if __name__ == '__main__':
-    print("\n" + "="*70)
-    print("Starting Train Control Platform")
-    print("VERSION: 2025-11-06-v2 (Step Response Fix + Deadband Tab Debug)")
-    print("="*70 + "\n")
+    print("Starting Train Control Platform...")
     print("Detecting network interfaces...")
 
     # Detect available interfaces
@@ -3776,17 +2740,8 @@ if __name__ == '__main__':
     print("\nStarting dashboard at http://127.0.0.1:8050")
     print("Configure network settings in the 'Network Configuration' tab")
 
-    # Force disable debug mode
-    import os
-    os.environ['FLASK_DEBUG'] = '0'
-
-    # Disable Flask request logging to reduce terminal spam
-    import logging
-    log = logging.getLogger('werkzeug')
-    log.setLevel(logging.ERROR)  # Only show errors, not every request
-
     try:
-        dashboard.run(debug=False, use_reloader=False)  # CRITICAL: use_reloader=False prevents WSL context reload
+        dashboard.run(debug=True)
     except KeyboardInterrupt:
         print("\nShutting down...")
         udp_receiver.stop()

@@ -1,0 +1,45 @@
+{
+  "trains": {
+    "trainA": {
+      "id": "trainA",
+      "name": "Train A",
+      "udp_port": 5555,
+      "mqtt_prefix": "trenes/trainA",
+      "pid_limits": {
+        "kp_max": 250,
+        "ki_max": 150,
+        "kd_max": 150
+      },
+      "enabled": true
+    },
+    "trainB": {
+      "id": "trainB",
+      "name": "Train B",
+      "udp_port": 5556,
+      "mqtt_prefix": "trenes/trainB",
+      "pid_limits": {
+        "kp_max": 250,
+        "ki_max": 150,
+        "kd_max": 150
+      },
+      "enabled": true
+    },
+    "trainC": {
+      "id": "trainC",
+      "name": "Train C",
+      "udp_port": 5557,
+      "mqtt_prefix": "trenes/trainC",
+      "pid_limits": {
+        "kp_max": 250,
+        "ki_max": 150,
+        "kd_max": 150
+      },
+      "enabled": true
+    }
+  },
+  "admin_password": "admin123",
+  "dashboard_host": "127.0.0.1",
+  "dashboard_port": 8050,
+  "network_ip": "192.168.137.1",
+  "mqtt_broker_ip": "192.168.137.1"
+}

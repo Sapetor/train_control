@@ -5,14 +5,15 @@ void setup_motor() {
     pinMode(Control_fwd, OUTPUT);
     pinMode(Control_back, OUTPUT);
     pinMode(Control_v, OUTPUT);
-    
+
     digitalWrite(STBY, HIGH);  // Enable motor driver
     digitalWrite(Control_v, HIGH);  // Motor off initially
-    
-    // Configure PWM: 100 Hz frequency, 10-bit resolution (0-1023)
-    ledcAttach(Control_v, 100, 10);
-    
-    Serial.println("Motor initialized");
+
+    // Configure PWM: 1000 Hz frequency, 10-bit resolution (0-1023)
+    // FIXED: Increased from 100Hz to 1000Hz for smoother motor control
+    ledcAttach(Control_v, 1000, 10);
+
+    Serial.println("✓ Motor initialized (PWM: 1000Hz, 10-bit)");
 }
 
 void SetMotorControl() {

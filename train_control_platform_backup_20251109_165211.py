@@ -36,8 +36,6 @@ from datetime import datetime
 import psutil
 import json
 import uuid
-from dataclasses import dataclass
-from typing import Dict, Optional
 
 # =============================================================================
 # Configuration Constants
@@ -106,138 +104,6 @@ MQTT_TOPICS = {
     'deadband_request_params': 'trenes/deadband/request_params',
     'deadband_apply': 'trenes/deadband/apply'
 }
-
-# =============================================================================
-# Train Configuration Management
-# =============================================================================
-
-@dataclass
-class TrainConfig:
-    """Configuration for a single train"""
-    id: str
-    name: str
-    udp_port: int
-    mqtt_prefix: str
-    pid_limits: Dict[str, int]
-    enabled: bool = True
-
-    def get_topic(self, base_topic: str) -> str:
-        """Convert base topic to train-specific topic"""
-        # Replace 'trenes/' with train-specific prefix
-        if base_topic.startswith('trenes/'):
-            return base_topic.replace('trenes/', f'{self.mqtt_prefix}/', 1)
-        return f'{self.mqtt_prefix}/{base_topic}'
-
-
-class TrainConfigManager:
-    """Manages train configurations from JSON file"""
-
-    def __init__(self, config_file='trains_config.json'):
-        self.config_file = config_file
-        self.trains: Dict[str, TrainConfig] = {}
-        self.admin_password = "admin123"
-        self.dashboard_host = "127.0.0.1"
-        self.dashboard_port = 8050
-        self.load_config()
-
-    def load_config(self):
-        """Load train configurations from JSON file"""
-        try:
-            if os.path.exists(self.config_file):
-                with open(self.config_file, 'r') as f:
-                    config_data = json.load(f)
-
-                self.admin_password = config_data.get('admin_password', 'admin123')
-                self.dashboard_host = config_data.get('dashboard_host', '127.0.0.1')
-                self.dashboard_port = config_data.get('dashboard_port', 8050)
-
-                for train_id, train_data in config_data.get('trains', {}).items():
-                    self.trains[train_id] = TrainConfig(**train_data)
-
-                print(f"[CONFIG] Loaded {len(self.trains)} train configurations")
-            else:
-                print(f"[CONFIG] No config file found, using defaults")
-                self._create_default_config()
-        except Exception as e:
-            print(f"[CONFIG ERROR] Failed to load config: {e}")
-            self._create_default_config()
-
-    def _create_default_config(self):
-        """Create default configuration with 3 trains"""
-        self.trains = {
-            'trainA': TrainConfig(
-                id='trainA',
-                name='Train A',
-                udp_port=5555,
-                mqtt_prefix='trenes/trainA',
-                pid_limits={'kp_max': 250, 'ki_max': 150, 'kd_max': 150},
-                enabled=True
-            ),
-            'trainB': TrainConfig(
-                id='trainB',
-                name='Train B',
-                udp_port=5556,
-                mqtt_prefix='trenes/trainB',
-                pid_limits={'kp_max': 250, 'ki_max': 150, 'kd_max': 150},
-                enabled=True
-            ),
-            'trainC': TrainConfig(
-                id='trainC',
-                name='Train C',
-                udp_port=5557,
-                mqtt_prefix='trenes/trainC',
-                pid_limits={'kp_max': 250, 'ki_max': 150, 'kd_max': 150},
-                enabled=True
-            )
-        }
-        self.save_config()
-
-    def save_config(self):
-        """Save train configurations to JSON file"""
-        try:
-            config_data = {
-                'trains': {
-                    train_id: {
-                        'id': train.id,
-                        'name': train.name,
-                        'udp_port': train.udp_port,
-                        'mqtt_prefix': train.mqtt_prefix,
-                        'pid_limits': train.pid_limits,
-                        'enabled': train.enabled
-                    }
-                    for train_id, train in self.trains.items()
-                },
-                'admin_password': self.admin_password,
-                'dashboard_host': self.dashboard_host,
-                'dashboard_port': self.dashboard_port
-            }
-
-            with open(self.config_file, 'w') as f:
-                json.dump(config_data, f, indent=2)
-
-            print(f"[CONFIG] Saved {len(self.trains)} train configurations")
-        except Exception as e:
-            print(f"[CONFIG ERROR] Failed to save config: {e}")
-
-    def get_enabled_trains(self) -> Dict[str, TrainConfig]:
-        """Get only enabled trains"""
-        return {tid: t for tid, t in self.trains.items() if t.enabled}
-
-    def add_train(self, train: TrainConfig):
-        """Add a new train configuration"""
-        self.trains[train.id] = train
-        self.save_config()
-
-    def remove_train(self, train_id: str):
-        """Remove a train configuration"""
-        if train_id in self.trains:
-            del self.trains[train_id]
-            self.save_config()
-
-    def update_train(self, train_id: str, train: TrainConfig):
-        """Update an existing train configuration"""
-        self.trains[train_id] = train
-        self.save_config()
 
 # =============================================================================
 # Classes
@@ -578,8 +444,7 @@ class NetworkManager:
 class DataManager:
     """Manages thread-safe data sharing between UDP receiver and dashboard"""
 
-    def __init__(self, train_id: str = ""):
-        self.train_id = train_id  # Train identifier for multi-train support
+    def __init__(self):
         self.data_queue = queue.Queue(maxsize=1000)
         self.latest_data = {}
         self.experiment_active = False
@@ -591,7 +456,10 @@ class DataManager:
         self.total_packets = 0
         self.last_packet_time = None
         self.connection_status = "Waiting for data"
-
+        
+        # WebSocket callback for push notifications
+        self.websocket_callback = None
+        
         # WebSocket callback for push notifications
         self.websocket_callback = None
 
@@ -605,10 +473,6 @@ class DataManager:
 
     def set_csv_file(self, filename):
         """Set the CSV file for data storage"""
-        # Prepend train ID to filename if specified
-        if self.train_id:
-            filename = f"{self.train_id}_{filename}"
-
         self.csv_file = filename
         self.initialized = True
         # Create CSV with headers
@@ -725,23 +589,19 @@ class DataManager:
 
 class StepResponseDataManager(DataManager):
     """Manages step response experiment data with different CSV format"""
-
-    def __init__(self, train_id: str = ""):
-        super().__init__(train_id)
+    
+    def __init__(self):
+        super().__init__()
         self.step_active = False
-
+    
     def create_step_csv(self):
         """Create a new step response CSV file with timestamp"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        # Prepend train ID to filename if specified
-        if self.train_id:
-            filename = f"{self.train_id}_step_response_{timestamp}.csv"
-        else:
-            filename = f"step_response_{timestamp}.csv"
+        filename = f"step_response_{timestamp}.csv"
         csv_path = os.path.join(os.getcwd(), filename)
         self.set_csv_file(csv_path)
         return csv_path
-
+    
     def set_csv_file(self, filename):
         """Create CSV with step response headers"""
         self.csv_file = filename
@@ -837,8 +697,8 @@ class StepResponseDataManager(DataManager):
 class DeadbandDataManager(DataManager):
     """Manages deadband calibration data"""
 
-    def __init__(self, train_id: str = ""):
-        super().__init__(train_id)
+    def __init__(self):
+        super().__init__()
         self.deadband_active = False
         self.calibrated_deadband = 0
         self.deadband_history = {
@@ -852,11 +712,7 @@ class DeadbandDataManager(DataManager):
     def create_deadband_csv(self):
         """Create a new deadband calibration CSV file with timestamp"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        # Prepend train ID to filename if specified
-        if self.train_id:
-            filename = f"{self.train_id}_deadband_calibration_{timestamp}.csv"
-        else:
-            filename = f"deadband_calibration_{timestamp}.csv"
+        filename = f"deadband_calibration_{timestamp}.csv"
         csv_path = os.path.join(os.getcwd(), filename)
         self.set_csv_file(csv_path)
         return csv_path

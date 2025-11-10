@@ -1,0 +1,46 @@
+{
+  "trains": {
+    "trainA": {
+      "name": "Train A - Main Line",
+      "udp_port": 5555,
+      "mqtt_prefix": "trenes/trainA",
+      "pid_limits": {
+        "kp_max": 250,
+        "ki_max": 150,
+        "kd_max": 150,
+        "reference_min": 1,
+        "reference_max": 100
+      },
+      "enabled": true
+    },
+    "trainB": {
+      "name": "Train B - Secondary Line",
+      "udp_port": 5556,
+      "mqtt_prefix": "trenes/trainB",
+      "pid_limits": {
+        "kp_max": 250,
+        "ki_max": 150,
+        "kd_max": 150,
+        "reference_min": 1,
+        "reference_max": 100
+      },
+      "enabled": true
+    },
+    "trainC": {
+      "name": "Train C - Test Bench",
+      "udp_port": 5557,
+      "mqtt_prefix": "trenes/trainC",
+      "pid_limits": {
+        "kp_max": 200,
+        "ki_max": 100,
+        "kd_max": 100,
+        "reference_min": 1,
+        "reference_max": 50
+      },
+      "enabled": false
+    }
+  },
+  "admin_password": "admin123",
+  "dashboard_host": "127.0.0.1",
+  "dashboard_port": 8050
+}
