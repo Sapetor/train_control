@@ -311,7 +311,8 @@ void loop_step_experiment() {
         Serial.print("  Direction: "); Serial.println(StepMotorDirection ? "Forward" : "Reverse");
 
         delta = millis() - tiempo_inicial_step;
-        StepTime = StepTime + millis();
+        // Calculate end time using saved duration (not current StepTime which holds duration)
+        StepTime = tiempo_inicial_step + StepTimeDuration;
 
         // Reset step delay counter and applied value
         stepSampleCounter = 0;

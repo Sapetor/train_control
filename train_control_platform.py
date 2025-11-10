@@ -258,6 +258,9 @@ class MQTTParameterSync:
         self.broker_port = DEFAULT_MQTT_PORT
         self.connected = False
 
+        # Thread safety lock for mode switching
+        self.mode_switch_lock = threading.Lock()
+
         # Use provided topics or fallback to global
         self.mqtt_topics = mqtt_topics if mqtt_topics is not None else MQTT_TOPICS
 
@@ -973,6 +976,7 @@ class UDPReceiver:
 
     def __init__(self, data_manager, ip='0.0.0.0', port=5555):
         self.data_manager = data_manager
+        self.data_manager_lock = threading.Lock()  # Thread safety for data manager switching
         self.ip = ip
         self.port = port
         self.socket = None
@@ -982,8 +986,9 @@ class UDPReceiver:
 
     def set_data_manager(self, data_manager):
         """Switch to a different data manager (e.g., for step response mode)"""
-        self.data_manager = data_manager
-        print(f"UDP receiver now using {data_manager.__class__.__name__}")
+        with self.data_manager_lock:
+            self.data_manager = data_manager
+            print(f"UDP receiver now using {data_manager.__class__.__name__}")
 
     def start(self):
         """Start UDP receiver in background thread"""
@@ -1034,7 +1039,9 @@ class UDPReceiver:
                 data, addr = self.socket.recvfrom(1024)
                 data_string = data.decode('utf-8')
                 # Data processing now handled in DataManager with reduced console output
-                self.data_manager.add_data(data_string)
+                # Thread-safe access to data manager
+                with self.data_manager_lock:
+                    self.data_manager.add_data(data_string)
                 timeout_count = 0  # Reset timeout counter on successful receive
 
             except socket.timeout:
@@ -1824,129 +1831,131 @@ class TrainControlDashboard:
     
     def switch_experiment_mode(self, new_mode):
         """Safely switch between PID, Step Response, and Deadband experiment modes"""
-        if new_mode == self.experiment_mode:
-            return  # Already in the requested mode
+        # Thread-safe mode switching to prevent race conditions
+        with self.mqtt_sync.mode_switch_lock:
+            if new_mode == self.experiment_mode:
+                return  # Already in the requested mode
 
-        print(f"[MODE SWITCH] Switching from {self.experiment_mode} to {new_mode}")
+            print(f"[MODE SWITCH] Switching from {self.experiment_mode} to {new_mode}")
 
-        # Only send MQTT messages if network is configured
-        if self.network_manager.mqtt_broker_ip:
-            try:
-                # Stop current mode on ESP32 first
-                if self.experiment_mode == 'pid':
-                    print("[MODE SWITCH] Stopping PID mode on ESP32...")
-                    publish.single(self.get_topic('sync'), 'False', hostname=self.network_manager.mqtt_broker_ip)
-                    time.sleep(0.3)
-                elif self.experiment_mode == 'step':
-                    print("[MODE SWITCH] Stopping Step Response mode on ESP32...")
-                    publish.single(self.get_topic('step_sync'), 'False', hostname=self.network_manager.mqtt_broker_ip)
-                    time.sleep(0.3)
-                elif self.experiment_mode == 'deadband':
-                    print("[MODE SWITCH] Stopping Deadband mode on ESP32...")
-                    # Stop deadband sync if implemented
-                    # publish.single(self.get_topic('deadband_sync'), 'False', hostname=self.network_manager.mqtt_broker_ip)
-                    time.sleep(0.3)
+            # Only send MQTT messages if network is configured
+            if self.network_manager.mqtt_broker_ip:
+                try:
+                    # Stop current mode on ESP32 first
+                    if self.experiment_mode == 'pid':
+                        print("[MODE SWITCH] Stopping PID mode on ESP32...")
+                        publish.single(self.get_topic('sync'), 'False', hostname=self.network_manager.mqtt_broker_ip)
+                        time.sleep(0.3)
+                    elif self.experiment_mode == 'step':
+                        print("[MODE SWITCH] Stopping Step Response mode on ESP32...")
+                        publish.single(self.get_topic('step_sync'), 'False', hostname=self.network_manager.mqtt_broker_ip)
+                        time.sleep(0.3)
+                    elif self.experiment_mode == 'deadband':
+                        print("[MODE SWITCH] Stopping Deadband mode on ESP32...")
+                        # Stop deadband sync if implemented
+                        # publish.single(self.get_topic('deadband_sync'), 'False', hostname=self.network_manager.mqtt_broker_ip)
+                        time.sleep(0.3)
 
-                # Send default parameters and request confirmation for new mode
-                if new_mode == 'step':
-                    print("[MODE SWITCH] Sending default step parameters to ESP32...")
-                    # Send sensible defaults
-                    default_amplitude = 3.0
-                    default_duration = 2.0
-                    default_direction = 1  # Forward
-                    default_vbatt = 8.4
+                    # Send default parameters and request confirmation for new mode
+                    if new_mode == 'step':
+                        print("[MODE SWITCH] Sending default step parameters to ESP32...")
+                        # Send sensible defaults
+                        default_amplitude = 3.0
+                        default_duration = 2.0
+                        default_direction = 1  # Forward
+                        default_vbatt = 8.4
 
-                    publish.single(self.get_topic('step_amplitude'), str(default_amplitude), hostname=self.network_manager.mqtt_broker_ip)
-                    publish.single(self.get_topic('step_time'), str(default_duration), hostname=self.network_manager.mqtt_broker_ip)
-                    publish.single(self.get_topic('step_direction'), str(default_direction), hostname=self.network_manager.mqtt_broker_ip)
-                    publish.single(self.get_topic('step_vbatt'), str(default_vbatt), hostname=self.network_manager.mqtt_broker_ip)
-                    print(f"[MODE SWITCH] Sent defaults: amp={default_amplitude}V, time={default_duration}s, dir={default_direction}, vbatt={default_vbatt}V")
-                    time.sleep(0.3)  # Wait for ESP32 to process and confirm
-                elif new_mode == 'pid':
-                    print("[MODE SWITCH] Requesting current PID parameters from ESP32...")
-                    publish.single(self.get_topic('request_params'), '1', hostname=self.network_manager.mqtt_broker_ip)
-                    time.sleep(0.2)
-                # Deadband mode doesn't need parameter request
+                        publish.single(self.get_topic('step_amplitude'), str(default_amplitude), hostname=self.network_manager.mqtt_broker_ip)
+                        publish.single(self.get_topic('step_time'), str(default_duration), hostname=self.network_manager.mqtt_broker_ip)
+                        publish.single(self.get_topic('step_direction'), str(default_direction), hostname=self.network_manager.mqtt_broker_ip)
+                        publish.single(self.get_topic('step_vbatt'), str(default_vbatt), hostname=self.network_manager.mqtt_broker_ip)
+                        print(f"[MODE SWITCH] Sent defaults: amp={default_amplitude}V, time={default_duration}s, dir={default_direction}, vbatt={default_vbatt}V")
+                        time.sleep(0.3)  # Wait for ESP32 to process and confirm
+                    elif new_mode == 'pid':
+                        print("[MODE SWITCH] Requesting current PID parameters from ESP32...")
+                        publish.single(self.get_topic('request_params'), '1', hostname=self.network_manager.mqtt_broker_ip)
+                        time.sleep(0.2)
+                    # Deadband mode doesn't need parameter request
 
-            except Exception as e:
-                print(f"[MODE SWITCH] Failed to send MQTT commands: {e}")
-                print("[MODE SWITCH] Check network configuration - MQTT broker may not be reachable")
-        else:
-            print("[MODE SWITCH] Network not configured - skipping MQTT commands")
-
-        # Stop UDP receiver
-        if self.udp_receiver.running:
-            print("[MODE SWITCH] Stopping UDP receiver...")
-            self.udp_receiver.stop()
-            time.sleep(0.5)  # Give time for thread to stop
-        
-        # Clear data queues
-        while not self.data_manager.data_queue.empty():
-            try:
-                self.data_manager.data_queue.get_nowait()
-            except:
-                pass
-        
-        while not self.step_data_manager.data_queue.empty():
-            try:
-                self.step_data_manager.data_queue.get_nowait()
-            except:
-                pass
-        
-        # Switch data manager based on mode
-        if new_mode == 'step':
-            print("[MODE SWITCH] Switching to Step Response mode")
-            # Create new CSV for step response
-            csv_path = self.step_data_manager.create_step_csv()
-            print(f"[MODE SWITCH] Created step response CSV: {csv_path}")
-
-            # Set UDP receiver to use step data manager
-            self.udp_receiver.set_data_manager(self.step_data_manager)
-
-            # Update experiment mode
-            self.experiment_mode = 'step'
-
-        elif new_mode == 'deadband':
-            print("[MODE SWITCH] Switching to Deadband Calibration mode")
-            # Create new CSV for deadband data
-            csv_path = self.deadband_data_manager.create_deadband_csv()
-            print(f"[MODE SWITCH] Created deadband CSV: {csv_path}")
-
-            # Set UDP receiver to use deadband data manager
-            self.udp_receiver.set_data_manager(self.deadband_data_manager)
-
-            # Update experiment mode
-            self.experiment_mode = 'deadband'
-
-        else:  # PID mode
-            print("[MODE SWITCH] Switching to PID Control mode")
-            # Create new CSV for PID data
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            csv_filename = f"experiment_{timestamp}.csv"
-            csv_path = os.path.join(os.getcwd(), csv_filename)
-            self.data_manager.set_csv_file(csv_path)
-            print(f"[MODE SWITCH] Created PID CSV: {csv_path}")
-
-            # Set UDP receiver to use regular data manager
-            self.udp_receiver.set_data_manager(self.data_manager)
-
-            # Update experiment mode
-            self.experiment_mode = 'pid'
-        
-        # Restart UDP receiver if network is configured
-        if self.network_manager.selected_ip:
-            print("[MODE SWITCH] Restarting UDP receiver...")
-            success = self.udp_receiver.start()
-            if success:
-                print("[MODE SWITCH] UDP receiver restarted successfully")
+                except Exception as e:
+                    print(f"[MODE SWITCH] Failed to send MQTT commands: {e}")
+                    print("[MODE SWITCH] Check network configuration - MQTT broker may not be reachable")
             else:
-                print("[MODE SWITCH] Failed to restart UDP receiver")
-        
-        # Push update to UI
-        self._push_websocket_message({'type': 'mode_change', 'mode': new_mode})
-        
-        print(f"[MODE SWITCH] Mode switch complete. Now in {new_mode} mode")
-        return True
+                print("[MODE SWITCH] Network not configured - skipping MQTT commands")
+
+            # Stop UDP receiver
+            if self.udp_receiver.running:
+                print("[MODE SWITCH] Stopping UDP receiver...")
+                self.udp_receiver.stop()
+                time.sleep(0.5)  # Give time for thread to stop
+
+            # Clear data queues
+            while not self.data_manager.data_queue.empty():
+                try:
+                    self.data_manager.data_queue.get_nowait()
+                except:
+                    pass
+
+            while not self.step_data_manager.data_queue.empty():
+                try:
+                    self.step_data_manager.data_queue.get_nowait()
+                except:
+                    pass
+
+            # Switch data manager based on mode
+            if new_mode == 'step':
+                print("[MODE SWITCH] Switching to Step Response mode")
+                # Create new CSV for step response
+                csv_path = self.step_data_manager.create_step_csv()
+                print(f"[MODE SWITCH] Created step response CSV: {csv_path}")
+
+                # Set UDP receiver to use step data manager
+                self.udp_receiver.set_data_manager(self.step_data_manager)
+
+                # Update experiment mode
+                self.experiment_mode = 'step'
+
+            elif new_mode == 'deadband':
+                print("[MODE SWITCH] Switching to Deadband Calibration mode")
+                # Create new CSV for deadband data
+                csv_path = self.deadband_data_manager.create_deadband_csv()
+                print(f"[MODE SWITCH] Created deadband CSV: {csv_path}")
+
+                # Set UDP receiver to use deadband data manager
+                self.udp_receiver.set_data_manager(self.deadband_data_manager)
+
+                # Update experiment mode
+                self.experiment_mode = 'deadband'
+
+            else:  # PID mode
+                print("[MODE SWITCH] Switching to PID Control mode")
+                # Create new CSV for PID data
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                csv_filename = f"experiment_{timestamp}.csv"
+                csv_path = os.path.join(os.getcwd(), csv_filename)
+                self.data_manager.set_csv_file(csv_path)
+                print(f"[MODE SWITCH] Created PID CSV: {csv_path}")
+
+                # Set UDP receiver to use regular data manager
+                self.udp_receiver.set_data_manager(self.data_manager)
+
+                # Update experiment mode
+                self.experiment_mode = 'pid'
+
+            # Restart UDP receiver if network is configured
+            if self.network_manager.selected_ip:
+                print("[MODE SWITCH] Restarting UDP receiver...")
+                success = self.udp_receiver.start()
+                if success:
+                    print("[MODE SWITCH] UDP receiver restarted successfully")
+                else:
+                    print("[MODE SWITCH] Failed to restart UDP receiver")
+
+            # Push update to UI
+            self._push_websocket_message({'type': 'mode_change', 'mode': new_mode})
+
+            print(f"[MODE SWITCH] Mode switch complete. Now in {new_mode} mode")
+            return True
 
     def _push_websocket_message(self, message):
         """Push message to WebSocket queue"""
@@ -3250,7 +3259,7 @@ class TrainControlDashboard:
             [Input('data-refresh-interval', 'n_intervals'),
              Input('historical-graph', 'relayoutData')]
         )
-        def update_historical_graph(n_intervals, relayout_data, ws_data):
+        def update_historical_graph(n_intervals, relayout_data):
             # Handle zoom state updates from user interaction for historical graph
             ctx = callback_context
             if ctx.triggered:
