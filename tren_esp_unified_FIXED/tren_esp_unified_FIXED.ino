@@ -122,7 +122,8 @@ PID myPID(&error_distancia, &u_distancia, &rf, Kp, Ki, Kd, DIRECT);
 // =============================================================================
 double v_batt = 8.4;
 double StepAmplitude = 0;
-uint32_t StepTime = 0;
+uint32_t StepTime = 0;           // Absolute end time (modified during experiment)
+uint32_t StepTimeDuration = 0;   // Original duration in ms (for status publishing)
 uint32_t delta = 0;
 uint32_t tiempo_inicial_step = 0;
 bool flag_step = true;
@@ -642,6 +643,7 @@ void mqtt_callback(char* topic, byte* payload, unsigned int length) {
         float time_seconds = mensaje.toFloat();
         StepTime = time_seconds * 1000;
         StepTime = constrain(StepTime, 0, 20000);
+        StepTimeDuration = StepTime;  // Save original duration for status publishing
         client.publish("trenes/step/time/status", String(time_seconds, 1).c_str());
     }
     else if (topic_str == "trenes/step/direction") {
@@ -656,7 +658,7 @@ void mqtt_callback(char* topic, byte* payload, unsigned int length) {
     }
     else if (topic_str == "trenes/step/request_params") {
         client.publish("trenes/step/amplitude/status", String(StepAmplitude, 1).c_str());
-        client.publish("trenes/step/time/status", String(StepTime / 1000.0, 1).c_str());
+        client.publish("trenes/step/time/status", String(StepTimeDuration / 1000.0, 1).c_str());  // Use duration, not absolute time
         client.publish("trenes/step/direction/status", String(StepMotorDirection).c_str());
         client.publish("trenes/step/vbatt/status", String(v_batt, 1).c_str());
     }
