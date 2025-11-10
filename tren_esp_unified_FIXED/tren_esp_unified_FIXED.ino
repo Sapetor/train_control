@@ -343,8 +343,9 @@ void loop_step_experiment() {
     if (millis() >= StepTime) {
         Serial.println("[STEP] Experiment duration complete");
         flag_step = true;
-        StepTime = 0;
-        StepAmplitude = 0;
+        // Don't reset parameters when experiment completes - keep them for next experiment
+        // StepTime = 0;
+        // StepAmplitude = 0;
         experimentActive = false;
         MotorSpeed = 0;
         SetMotorControl();
