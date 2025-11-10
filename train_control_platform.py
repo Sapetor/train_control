@@ -246,11 +246,20 @@ class TrainConfigManager:
 class MQTTParameterSync:
     """Handles MQTT communication for PID parameter synchronization"""
 
-    def __init__(self):
+    def __init__(self, mqtt_topics=None):
+        """
+        Initialize MQTT parameter sync.
+
+        Args:
+            mqtt_topics: Dict of train-specific topics, or None to use global MQTT_TOPICS
+        """
         self.client = None
         self.broker_ip = DEFAULT_MQTT_BROKER
         self.broker_port = DEFAULT_MQTT_PORT
         self.connected = False
+
+        # Use provided topics or fallback to global
+        self.mqtt_topics = mqtt_topics if mqtt_topics is not None else MQTT_TOPICS
 
         # Store confirmed parameter values from Arduino
         self.confirmed_params = {
@@ -303,32 +312,32 @@ class MQTTParameterSync:
             self.connected = True
             timestamp = time.strftime('%H:%M:%S')
             print(f"[MQTT {timestamp}] Parameter sync connected successfully")
-            # Subscribe to parameter confirmation topics
+            # Subscribe to parameter confirmation topics (using instance topics)
             topics = [
-                MQTT_TOPICS['kp_status'],
-                MQTT_TOPICS['ki_status'],
-                MQTT_TOPICS['kd_status'],
-                MQTT_TOPICS['ref_status']
+                self.mqtt_topics['kp_status'],
+                self.mqtt_topics['ki_status'],
+                self.mqtt_topics['kd_status'],
+                self.mqtt_topics['ref_status']
             ]
             for topic in topics:
                 result = client.subscribe(topic)
                 print(f"[MQTT {timestamp}] Subscribed to {topic}, result: {result}")
 
-            # Subscribe to step response confirmation topics
+            # Subscribe to step response confirmation topics (using instance topics)
             step_topics = [
-                MQTT_TOPICS['step_amplitude_status'],
-                MQTT_TOPICS['step_time_status'],
-                MQTT_TOPICS['step_direction_status'],
-                MQTT_TOPICS['step_vbatt_status']
+                self.mqtt_topics['step_amplitude_status'],
+                self.mqtt_topics['step_time_status'],
+                self.mqtt_topics['step_direction_status'],
+                self.mqtt_topics['step_vbatt_status']
             ]
             for topic in step_topics:
                 result = client.subscribe(topic)
                 print(f"[MQTT {timestamp}] Subscribed to {topic}, result: {result}")
-            
-            # Request current parameters from ESP32 by publishing a "request" signal
+
+            # Request current parameters from ESP32 (using instance topics)
             print(f"[MQTT {timestamp}] Requesting current parameters from ESP32...")
-            client.publish(MQTT_TOPICS['request_params'], "1")
-            client.publish(MQTT_TOPICS['step_request_params'], "1")
+            client.publish(self.mqtt_topics['request_params'], "1")
+            client.publish(self.mqtt_topics['step_request_params'], "1")
         else:
             print(f"[MQTT ERROR] Parameter sync failed with code {rc}")
 
@@ -341,30 +350,30 @@ class MQTTParameterSync:
             timestamp = time.strftime('%H:%M:%S')
             print(f"[MQTT {timestamp}] Received message: {topic} = {value}")
 
-            # Update confirmed parameters based on topic
-            if topic == MQTT_TOPICS['kp_status']:
+            # Update confirmed parameters based on topic (using instance topics)
+            if topic == self.mqtt_topics['kp_status']:
                 self.confirmed_params['kp'] = value
                 print(f"[MQTT {timestamp}] Updated Kp to {value}")
-            elif topic == MQTT_TOPICS['ki_status']:
+            elif topic == self.mqtt_topics['ki_status']:
                 self.confirmed_params['ki'] = value
                 print(f"[MQTT {timestamp}] Updated Ki to {value}")
-            elif topic == MQTT_TOPICS['kd_status']:
+            elif topic == self.mqtt_topics['kd_status']:
                 self.confirmed_params['kd'] = value
                 print(f"[MQTT {timestamp}] Updated Kd to {value}")
-            elif topic == MQTT_TOPICS['ref_status']:
+            elif topic == self.mqtt_topics['ref_status']:
                 self.confirmed_params['reference'] = value
                 print(f"[MQTT {timestamp}] Updated Reference to {value}")
-            # Handle step response parameter confirmations
-            elif topic == MQTT_TOPICS['step_amplitude_status']:
+            # Handle step response parameter confirmations (using instance topics)
+            elif topic == self.mqtt_topics['step_amplitude_status']:
                 self.step_confirmed_params['amplitude'] = value
                 print(f"[MQTT {timestamp}] Updated Step Amplitude to {value}")
-            elif topic == MQTT_TOPICS['step_time_status']:
+            elif topic == self.mqtt_topics['step_time_status']:
                 self.step_confirmed_params['time'] = value
                 print(f"[MQTT {timestamp}] Updated Step Time to {value}")
-            elif topic == MQTT_TOPICS['step_direction_status']:
+            elif topic == self.mqtt_topics['step_direction_status']:
                 self.step_confirmed_params['direction'] = int(value)
                 print(f"[MQTT {timestamp}] Updated Step Direction to {int(value)}")
-            elif topic == MQTT_TOPICS['step_vbatt_status']:
+            elif topic == self.mqtt_topics['step_vbatt_status']:
                 self.step_confirmed_params['vbatt'] = value
                 print(f"[MQTT {timestamp}] Updated Step VBatt to {value}")
             else:
@@ -1053,6 +1062,10 @@ class TrainControlDashboard:
         # Track which experiment mode is active ('pid', 'step', or 'deadband')
         self.experiment_mode = 'pid'  # Default to PID mode
 
+        # Initialize train-specific MQTT topics (will be overridden by multi_train_wrapper)
+        self.mqtt_topics = None  # Will use global MQTT_TOPICS if None
+        self.train_config = None  # Will be set by multi_train_wrapper
+
         # Create step response data manager
         self.step_data_manager = StepResponseDataManager()
 
@@ -1066,8 +1079,10 @@ class TrainControlDashboard:
 
         
 
-        # Initialize MQTT parameter sync
-        self.mqtt_sync = MQTTParameterSync()
+        # Initialize MQTT parameter sync with train-specific topics
+        # Use self.mqtt_topics if set by multi_train_wrapper, else use global MQTT_TOPICS
+        mqtt_topics = getattr(self, 'mqtt_topics', None) or MQTT_TOPICS
+        self.mqtt_sync = MQTTParameterSync(mqtt_topics=mqtt_topics)
         self.confirmed_params = {
             'kp': 0.0,
             'ki': 0.0,
@@ -1465,6 +1480,69 @@ class TrainControlDashboard:
         self.setup_layout()
         self.setup_callbacks()
 
+    def _get_csv_glob_pattern(self, experiment_type='pid'):
+        """
+        Get CSV glob pattern based on train_id and experiment type.
+
+        Supports both single-train and multi-train modes:
+        - Single-train: returns "experiment_*.csv"
+        - Multi-train (trainA): returns "trainA_experiment_*.csv"
+
+        Args:
+            experiment_type: 'pid', 'step', or 'deadband'
+
+        Returns:
+            str: Glob pattern for finding CSV files
+        """
+        patterns = {
+            'pid': 'experiment_*.csv',
+            'step': 'step_response_*.csv',
+            'deadband': 'deadband_*.csv'
+        }
+
+        base_pattern = patterns.get(experiment_type, 'experiment_*.csv')
+
+        # Try multiple sources for train_id (multi-train mode detection)
+        train_id = None
+
+        # Source 1: train_config (set by multi_train_wrapper)
+        if hasattr(self, 'train_config') and self.train_config:
+            train_id = self.train_config.id
+        # Source 2: data_manager.train_id
+        elif hasattr(self, 'data_manager') and hasattr(self.data_manager, 'train_id') and self.data_manager.train_id:
+            train_id = self.data_manager.train_id
+
+        # Return train-prefixed pattern or plain pattern
+        if train_id:
+            return f"{train_id}_{base_pattern}"
+        else:
+            return base_pattern
+
+    def get_topic(self, topic_key):
+        """
+        Get train-specific MQTT topic if available, else global topic.
+
+        This ensures backward compatibility:
+        - Single-train mode: uses global MQTT_TOPICS
+        - Multi-train mode: uses self.mqtt_topics (set by multi_train_wrapper)
+
+        Args:
+            topic_key: Key from MQTT_TOPICS dict (e.g., 'kp', 'step_sync')
+
+        Returns:
+            str: Train-specific topic or global topic
+
+        Example:
+            # Single-train mode:
+            self.get_topic('kp') → 'trenes/carroD/p'
+
+            # Multi-train mode (Train A):
+            self.get_topic('kp') → 'trenes/trainA/carroD/p'
+        """
+        if hasattr(self, 'mqtt_topics') and self.mqtt_topics:
+            return self.mqtt_topics.get(topic_key, MQTT_TOPICS[topic_key])
+        return MQTT_TOPICS[topic_key]
+
     def _handle_zoom_state(self, graph_id, relayout_data):
         """Handle zoom state updates for a specific graph"""
         if relayout_data and graph_id in self.zoom_state:
@@ -1521,7 +1599,7 @@ class TrainControlDashboard:
         # Try to read current CSV data
         try:
             # Find the actual file being written to
-            csv_files = glob.glob("experiment_*.csv")
+            csv_files = glob.glob(self._get_csv_glob_pattern('pid'))
             if not csv_files:
                 fig.update_layout(
                     title=self.t('experiment_files_not_found'),
@@ -1740,20 +1818,20 @@ class TrainControlDashboard:
                 if new_mode == 'step':
                     print("[MODE SWITCH] Telling ESP32 to enter Step Response mode...")
                     # Stop PID mode first
-                    publish.single(MQTT_TOPICS['sync'], 'False', hostname=self.network_manager.mqtt_broker_ip)
+                    publish.single(self.get_topic('sync'), 'False', hostname=self.network_manager.mqtt_broker_ip)
                     time.sleep(0.3)
 
                     # FIXED: ESP32 firmware now accepts step parameters regardless of mode
                     # No need to switch modes or send dummy parameters
                     # Just request current parameters to populate the status display
                     print("[MODE SWITCH] Requesting current step parameters from ESP32...")
-                    publish.single(MQTT_TOPICS['step_request_params'], '1', hostname=self.network_manager.mqtt_broker_ip)
+                    publish.single(self.get_topic('step_request_params'), '1', hostname=self.network_manager.mqtt_broker_ip)
                     time.sleep(0.2)
                     print("[MODE SWITCH] ESP32 now in STEP_MODE and ready for parameters")
                 else:  # Switching to PID mode
                     print("[MODE SWITCH] Telling ESP32 to enter PID mode...")
                     # Stop step mode first
-                    publish.single(MQTT_TOPICS['step_sync'], 'False', hostname=self.network_manager.mqtt_broker_ip)
+                    publish.single(self.get_topic('step_sync'), 'False', hostname=self.network_manager.mqtt_broker_ip)
                     time.sleep(0.3)
                     # ESP32 will default back to PID mode
             except Exception as e:
@@ -2632,13 +2710,13 @@ class TrainControlDashboard:
                     if self.data_manager.experiment_active:
                         print("[MODE SWITCH] Stopping PID experiment before switching to Step Response")
                         self.data_manager.stop_experiment()
-                        publish.single(MQTT_TOPICS['sync'], 'False', hostname=self.network_manager.mqtt_broker_ip)
+                        publish.single(self.get_topic('sync'), 'False', hostname=self.network_manager.mqtt_broker_ip)
                 elif new_mode == 'pid' and self.experiment_mode == 'step':
                     # Switching from Step to PID - stop Step experiment
                     if self.step_data_manager.experiment_active:
                         print("[MODE SWITCH] Stopping Step Response experiment before switching to PID")
                         self.step_data_manager.stop_experiment()
-                        publish.single(MQTT_TOPICS['step_sync'], 'False', hostname=self.network_manager.mqtt_broker_ip)
+                        publish.single(self.get_topic('step_sync'), 'False', hostname=self.network_manager.mqtt_broker_ip)
                 
                 # Use the new mode switching method
                 self.switch_experiment_mode(new_mode)
@@ -2814,13 +2892,13 @@ class TrainControlDashboard:
                             
                             # CRITICAL: Stop PID mode on ESP32 first
                             print("[STEP START] Stopping PID on ESP32...")
-                            publish.single(MQTT_TOPICS['sync'], 'False', hostname=self.network_manager.mqtt_broker_ip)
+                            publish.single(self.get_topic('sync'), 'False', hostname=self.network_manager.mqtt_broker_ip)
                             time.sleep(0.2)  # Wait for ESP32 to stop
                             
                             # Parameters are already on ESP32 via individual MQTT callbacks
                             # Just request a refresh to ensure sync before starting
                             print(f"[STEP START] Starting experiment with confirmed params: {confirmed}")
-                            publish.single(MQTT_TOPICS['step_request_params'], '1',
+                            publish.single(self.get_topic('step_request_params'), '1',
                                          hostname=self.network_manager.mqtt_broker_ip)
                             time.sleep(0.2)  # Wait for confirmation
                             
@@ -2833,7 +2911,7 @@ class TrainControlDashboard:
                             
                             # Start the experiment
                             print("[STEP START] Starting step response mode on ESP32...")
-                            publish.single(MQTT_TOPICS['step_sync'], 'True', 
+                            publish.single(self.get_topic('step_sync'), 'True', 
                                          hostname=self.network_manager.mqtt_broker_ip)
                         else:
                             # PID mode - create new CSV and switch data manager
@@ -2845,8 +2923,8 @@ class TrainControlDashboard:
                             
                             # CRITICAL: Stop step response mode on ESP32 first
                             print("[PID START] Stopping step response on ESP32...")
-                            publish.single(MQTT_TOPICS['step_sync'], 'False', hostname=self.network_manager.mqtt_broker_ip)
-                            publish.single(MQTT_TOPICS['step_amplitude'], 0.0, hostname=self.network_manager.mqtt_broker_ip)
+                            publish.single(self.get_topic('step_sync'), 'False', hostname=self.network_manager.mqtt_broker_ip)
+                            publish.single(self.get_topic('step_amplitude'), 0.0, hostname=self.network_manager.mqtt_broker_ip)
                             time.sleep(0.2)  # Wait for ESP32 to stop
                             
                             # Switch UDP receiver to PID data manager
@@ -2855,7 +2933,7 @@ class TrainControlDashboard:
                             
                             # Start PID experiment on ESP32
                             print("[PID START] Starting PID mode on ESP32...")
-                            publish.single(MQTT_TOPICS['sync'], 'True', hostname=self.network_manager.mqtt_broker_ip)
+                            publish.single(self.get_topic('sync'), 'True', hostname=self.network_manager.mqtt_broker_ip)
                         return html.Div(self.t('experiment_started'), style={'color': self.colors['success']})
                     else:
                         return html.Div(self.t('configure_network_warning'), style={'color': self.colors['danger']})
@@ -2863,12 +2941,12 @@ class TrainControlDashboard:
                 elif trigger_id == 'stop-experiment-btn' and stop_clicks:
                     if self.experiment_mode == 'step':
                         self.step_data_manager.stop_experiment()
-                        publish.single(MQTT_TOPICS['step_sync'], 'False', hostname=self.network_manager.mqtt_broker_ip)
+                        publish.single(self.get_topic('step_sync'), 'False', hostname=self.network_manager.mqtt_broker_ip)
                         print("[STEP STOP] Stopped step response experiment")
                         return html.Div(self.t('experiment_stopped'), style={'color': self.colors['danger']})
                     else:
                         self.data_manager.stop_experiment()
-                        publish.single(MQTT_TOPICS['sync'], 'False', hostname=self.network_manager.mqtt_broker_ip)
+                        publish.single(self.get_topic('sync'), 'False', hostname=self.network_manager.mqtt_broker_ip)
                         print("[PID STOP] Stopped PID experiment")
                         return html.Div(self.t('experiment_stopped'), style={'color': self.colors['danger']})
 
@@ -2931,17 +3009,17 @@ class TrainControlDashboard:
                 try:
                     # Send MQTT only for sliders (immediate) and send buttons (on click)
                     if trigger_id in ['kp-slider', 'kp-send-btn']:
-                        print(f"[PID MQTT] Sending Kp={kp} to {MQTT_TOPICS['kp']} @ {self.network_manager.mqtt_broker_ip}")
-                        publish.single(MQTT_TOPICS['kp'], kp, hostname=self.network_manager.mqtt_broker_ip)
+                        print(f"[PID MQTT] Sending Kp={kp} to {self.get_topic('kp')} @ {self.network_manager.mqtt_broker_ip}")
+                        publish.single(self.get_topic('kp'), kp, hostname=self.network_manager.mqtt_broker_ip)
                     elif trigger_id in ['ki-slider', 'ki-send-btn']:
-                        print(f"[PID MQTT] Sending Ki={ki} to {MQTT_TOPICS['ki']} @ {self.network_manager.mqtt_broker_ip}")
-                        publish.single(MQTT_TOPICS['ki'], ki, hostname=self.network_manager.mqtt_broker_ip)
+                        print(f"[PID MQTT] Sending Ki={ki} to {self.get_topic('ki')} @ {self.network_manager.mqtt_broker_ip}")
+                        publish.single(self.get_topic('ki'), ki, hostname=self.network_manager.mqtt_broker_ip)
                     elif trigger_id in ['kd-slider', 'kd-send-btn']:
-                        print(f"[PID MQTT] Sending Kd={kd} to {MQTT_TOPICS['kd']} @ {self.network_manager.mqtt_broker_ip}")
-                        publish.single(MQTT_TOPICS['kd'], kd, hostname=self.network_manager.mqtt_broker_ip)
+                        print(f"[PID MQTT] Sending Kd={kd} to {self.get_topic('kd')} @ {self.network_manager.mqtt_broker_ip}")
+                        publish.single(self.get_topic('kd'), kd, hostname=self.network_manager.mqtt_broker_ip)
                     elif trigger_id in ['reference-slider', 'ref-send-btn']:
-                        print(f"[PID MQTT] Sending Ref={reference} to {MQTT_TOPICS['reference']} @ {self.network_manager.mqtt_broker_ip}")
-                        publish.single(MQTT_TOPICS['reference'], reference, hostname=self.network_manager.mqtt_broker_ip)
+                        print(f"[PID MQTT] Sending Ref={reference} to {self.get_topic('reference')} @ {self.network_manager.mqtt_broker_ip}")
+                        publish.single(self.get_topic('reference'), reference, hostname=self.network_manager.mqtt_broker_ip)
 
                     # Simple status since ESP32 parameters are now shown above
                     return self.t('parameters_sent_esp32')
@@ -3124,7 +3202,7 @@ class TrainControlDashboard:
         )
         def update_csv_path(n_intervals):
             # Show the actual active file being read from
-            csv_files = glob.glob("experiment_*.csv")
+            csv_files = glob.glob(self._get_csv_glob_pattern('pid'))
             if csv_files:
                 active_csv = max(csv_files, key=os.path.getmtime)
                 file_size = os.path.getsize(active_csv)
@@ -3135,8 +3213,8 @@ class TrainControlDashboard:
         def create_download_callback():
             """Shared download logic for all tabs"""
             # Find the active CSV file (either PID or Step Response mode)
-            pid_files = glob.glob("experiment_*.csv")
-            step_files = glob.glob("step_response_*.csv")
+            pid_files = glob.glob(self._get_csv_glob_pattern('pid'))
+            step_files = glob.glob(self._get_csv_glob_pattern('step'))
             all_csv_files = pid_files + step_files
 
             if all_csv_files:
@@ -3227,27 +3305,27 @@ class TrainControlDashboard:
                 if self.network_manager.selected_ip:
                     try:
                         if trigger_id == 'amplitude-slider':
-                            publish.single(MQTT_TOPICS['step_amplitude'], str(amp_slider),
+                            publish.single(self.get_topic('step_amplitude'), str(amp_slider),
                                          hostname=self.network_manager.mqtt_broker_ip)
                             print(f"[STEP PARAM] Sent amplitude = {amp_slider}")
                         elif trigger_id == 'amplitude-send-btn' and amp_input is not None:
-                            publish.single(MQTT_TOPICS['step_amplitude'], str(amp_input),
+                            publish.single(self.get_topic('step_amplitude'), str(amp_input),
                                          hostname=self.network_manager.mqtt_broker_ip)
                             print(f"[STEP PARAM] Sent amplitude = {amp_input}")
                         elif trigger_id == 'duration-slider':
-                            publish.single(MQTT_TOPICS['step_time'], str(dur_slider),
+                            publish.single(self.get_topic('step_time'), str(dur_slider),
                                          hostname=self.network_manager.mqtt_broker_ip)
                             print(f"[STEP PARAM] Sent time = {dur_slider}")
                         elif trigger_id == 'duration-send-btn' and dur_input is not None:
-                            publish.single(MQTT_TOPICS['step_time'], str(dur_input),
+                            publish.single(self.get_topic('step_time'), str(dur_input),
                                          hostname=self.network_manager.mqtt_broker_ip)
                             print(f"[STEP PARAM] Sent time = {dur_input}")
                         elif trigger_id == 'vbatt-slider':
-                            publish.single(MQTT_TOPICS['step_vbatt'], str(vbatt),
+                            publish.single(self.get_topic('step_vbatt'), str(vbatt),
                                          hostname=self.network_manager.mqtt_broker_ip)
                             print(f"[STEP PARAM] Sent vbatt = {vbatt}")
                         elif trigger_id == 'direction-radio':
-                            publish.single(MQTT_TOPICS['step_direction'], direction,
+                            publish.single(self.get_topic('step_direction'), direction,
                                          hostname=self.network_manager.mqtt_broker_ip)
                             print(f"[STEP PARAM] Sent direction = {direction}")
                     except Exception as e:
@@ -3270,7 +3348,7 @@ class TrainControlDashboard:
             """Update step response graph with 3 traces: distance, step input, PWM"""
             try:
                 # Find step response CSV files
-                csv_files = glob.glob("step_response_*.csv")
+                csv_files = glob.glob(self._get_csv_glob_pattern('step'))
                 if not csv_files:
                     fig = px.line(title=self.t('no_step_data'))
                     fig.update_layout(
@@ -3397,15 +3475,15 @@ class TrainControlDashboard:
                     print(f"Deadband calibration CSV: {csv_path}")
         
                     # Send configuration via MQTT
-                    publish.single(MQTT_TOPICS['deadband_direction'], str(direction),
+                    publish.single(self.get_topic('deadband_direction'), str(direction),
                                  hostname=self.network_manager.mqtt_broker_ip)
                     time.sleep(0.05)
-                    publish.single(MQTT_TOPICS['deadband_threshold'], str(threshold),
+                    publish.single(self.get_topic('deadband_threshold'), str(threshold),
                                  hostname=self.network_manager.mqtt_broker_ip)
                     time.sleep(0.05)
 
                     # Start calibration
-                    publish.single(MQTT_TOPICS['deadband_sync'], "True",
+                    publish.single(self.get_topic('deadband_sync'), "True",
                                  hostname=self.network_manager.mqtt_broker_ip)
         
                     return (html.Div(self.t('calibration_in_progress'),
@@ -3419,7 +3497,7 @@ class TrainControlDashboard:
             # Stop calibration
             elif trigger_id == 'deadband-stop-btn' and stop_clicks > 0:
                 try:
-                    publish.single(MQTT_TOPICS['deadband_sync'], "False",
+                    publish.single(self.get_topic('deadband_sync'), "False",
                                  hostname=self.network_manager.mqtt_broker_ip)
         
                     return (html.Div(self.t('calibration_complete'),
@@ -3464,7 +3542,7 @@ class TrainControlDashboard:
             if n_clicks > 0 and result_text:
                 try:
                     # Send apply command via MQTT
-                    publish.single(MQTT_TOPICS['deadband_apply'], "True",
+                    publish.single(self.get_topic('deadband_apply'), "True",
                                  hostname=self.network_manager.mqtt_broker_ip)
         
                     return html.Div(self.t('deadband_applied'),
