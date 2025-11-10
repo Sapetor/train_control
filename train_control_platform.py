@@ -3505,28 +3505,38 @@ class TrainControlDashboard:
             # Start calibration
             if trigger_id == 'deadband-start-btn' and start_clicks > 0:
                 try:
+                    print(f"[DEADBAND] Start button clicked. Network config:")
+                    print(f"  - Selected IP: {self.network_manager.selected_ip}")
+                    print(f"  - MQTT Broker IP: {self.network_manager.mqtt_broker_ip}")
+                    print(f"  - Direction: {direction}, Threshold: {threshold}")
+
                     # Switch to deadband data manager
                     self.experiment_mode = 'deadband'
                     self.udp_receiver.set_data_manager(self.deadband_data_manager)
-        
+
                     # Clear previous calibration data
                     self.deadband_data_manager.clear_history()
-        
+
                     # Create new CSV file
                     csv_path = self.deadband_data_manager.create_deadband_csv()
                     print(f"Deadband calibration CSV: {csv_path}")
-        
+
                     # Send configuration via MQTT
+                    print(f"[DEADBAND] Sending direction={direction} to {self.get_topic('deadband_direction')} @ {self.network_manager.mqtt_broker_ip}")
                     publish.single(self.get_topic('deadband_direction'), str(direction),
                                  hostname=self.network_manager.mqtt_broker_ip)
                     time.sleep(0.05)
+
+                    print(f"[DEADBAND] Sending threshold={threshold} to {self.get_topic('deadband_threshold')} @ {self.network_manager.mqtt_broker_ip}")
                     publish.single(self.get_topic('deadband_threshold'), str(threshold),
                                  hostname=self.network_manager.mqtt_broker_ip)
                     time.sleep(0.05)
 
                     # Start calibration
+                    print(f"[DEADBAND] Sending sync=True to {self.get_topic('deadband_sync')} @ {self.network_manager.mqtt_broker_ip}")
                     publish.single(self.get_topic('deadband_sync'), "True",
                                  hostname=self.network_manager.mqtt_broker_ip)
+                    print("[DEADBAND] Calibration start command sent to ESP32")
         
                     return (html.Div(self.t('calibration_in_progress'),
                                     style={'color': '#FFA500'}),
@@ -3539,9 +3549,11 @@ class TrainControlDashboard:
             # Stop calibration
             elif trigger_id == 'deadband-stop-btn' and stop_clicks > 0:
                 try:
+                    print(f"[DEADBAND] Sending sync=False to {self.get_topic('deadband_sync')} @ {self.network_manager.mqtt_broker_ip}")
                     publish.single(self.get_topic('deadband_sync'), "False",
                                  hostname=self.network_manager.mqtt_broker_ip)
-        
+                    print("[DEADBAND] Calibration stop command sent to ESP32")
+
                     return (html.Div(self.t('calibration_complete'),
                                     style={'color': '#28A745'}),
                             f"{self.deadband_data_manager.calibrated_deadband} PWM",
