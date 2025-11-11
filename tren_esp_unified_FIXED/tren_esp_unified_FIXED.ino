@@ -641,6 +641,8 @@ void mqtt_callback(char* topic, byte* payload, unsigned int length) {
         } else {
             experimentActive = false;
             flag_step = true;
+            // Return to PID mode as default idle mode
+            currentExperimentMode = PID_MODE;
             // Don't reset parameters when stopping - keep them for next start
             // StepAmplitude = 0;
             // StepTime = 0;
@@ -648,7 +650,7 @@ void mqtt_callback(char* topic, byte* payload, unsigned int length) {
             StepMotorDirection = 1;
             MotorDirection = StepMotorDirection;
             SetMotorControl();
-            Serial.println("[STEP] Stopped");
+            Serial.println("[STEP] Stopped - returning to PID mode");
         }
     }
     // IMPORTANT: Allow setting step parameters regardless of current mode
@@ -695,11 +697,13 @@ void mqtt_callback(char* topic, byte* payload, unsigned int length) {
         } else {
             experimentActive = false;
             flag_deadband = true;
+            // Return to PID mode as default idle mode
+            currentExperimentMode = PID_MODE;
             MotorSpeed = 0;
             DeadbandMotorDirection = 1;
             MotorDirection = DeadbandMotorDirection;
             SetMotorControl();
-            Serial.println("[DEADBAND] Stopped");
+            Serial.println("[DEADBAND] Stopped - returning to PID mode");
         }
     }
     else if (topic_str == "trenes/deadband/direction") {
