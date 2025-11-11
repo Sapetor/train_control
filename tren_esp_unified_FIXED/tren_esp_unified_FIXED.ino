@@ -128,10 +128,12 @@ uint32_t delta = 0;
 uint32_t tiempo_inicial_step = 0;
 bool flag_step = true;
 double u_step;
-// NEW: Delay step application to get baseline samples
-int stepSampleCounter = 0;
-const int STEP_DELAY_SAMPLES = 2;  // Number of samples to wait before applying step
-double appliedStepValue = 0.0;     // Actual step value being applied (0 initially, then StepAmplitude)
+// NEW: Sensor warm-up and baseline sampling for step response
+const int STEP_WARMUP_SAMPLES = 5;    // Discard first N samples (sensor initialization)
+const int STEP_BASELINE_SAMPLES = 3;  // Baseline samples after warm-up (motor off)
+int stepWarmupCounter = 0;            // Counts warm-up samples (discarded)
+int stepBaselineCounter = 0;          // Counts baseline samples (recorded)
+double appliedStepValue = 0.0;        // Actual step value being applied (0 initially, then StepAmplitude)
 
 // =============================================================================
 // Deadband Calibration Mode Variables (NEW)
@@ -314,25 +316,41 @@ void loop_step_experiment() {
         // Calculate end time using saved duration (not current StepTime which holds duration)
         StepTime = tiempo_inicial_step + StepTimeDuration;
 
-        // Reset step delay counter and applied value
-        stepSampleCounter = 0;
+        // Reset counters and applied value
+        stepWarmupCounter = 0;
+        stepBaselineCounter = 0;
         appliedStepValue = 0.0;
-        Serial.print("  Waiting for "); Serial.print(STEP_DELAY_SAMPLES); Serial.println(" baseline samples before applying step...");
+        Serial.print("  Sensor warm-up: "); Serial.print(STEP_WARMUP_SAMPLES); Serial.println(" samples (discarded)");
+        Serial.print("  Baseline: "); Serial.print(STEP_BASELINE_SAMPLES); Serial.println(" samples (motor off)");
     }
 
     read_ToF_sensor();
 
-    // Apply step only after collecting baseline samples
-    if (stepSampleCounter < STEP_DELAY_SAMPLES) {
-        // Baseline period - motor off, step = 0
-        appliedStepValue = 0.0;
+    // Three-phase approach: WARMUP -> BASELINE -> STEP APPLIED
+    if (stepWarmupCounter < STEP_WARMUP_SAMPLES) {
+        // PHASE 1: WARMUP - Discard samples to let sensor stabilize
+        stepWarmupCounter++;
         MotorSpeed = 0;
-        stepSampleCounter++;
-        if (stepSampleCounter == STEP_DELAY_SAMPLES) {
-            Serial.println("[STEP] Baseline samples collected, applying step now!");
+        appliedStepValue = 0.0;
+        MotorDirection = StepMotorDirection;
+        SetMotorControl();
+        // DON'T send UDP data during warm-up (sensor readings unstable)
+        if (stepWarmupCounter == STEP_WARMUP_SAMPLES) {
+            Serial.println("[STEP] Sensor warm-up complete, collecting baseline...");
         }
-    } else {
-        // Apply the step
+        return;  // Skip UDP send during warm-up
+    }
+    else if (stepBaselineCounter < STEP_BASELINE_SAMPLES) {
+        // PHASE 2: BASELINE - Motor off, record stable baseline readings
+        stepBaselineCounter++;
+        MotorSpeed = 0;
+        appliedStepValue = 0.0;
+        if (stepBaselineCounter == STEP_BASELINE_SAMPLES) {
+            Serial.println("[STEP] Baseline collected, applying step now!");
+        }
+    }
+    else {
+        // PHASE 3: STEP APPLIED - Apply step input and record response
         appliedStepValue = StepAmplitude;
         u_step = StepAmplitude * 1024 / v_batt;
         MotorSpeed = constrain(u_step, 0, 1024);
