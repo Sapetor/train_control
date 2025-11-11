@@ -114,6 +114,9 @@ double ponderado = 0;
 bool flag_pid = true;
 uint32_t tiempo_inicial_pid = 0;
 bool pid_params_changed = false;
+// NEW: Sensor warm-up for PID mode
+const int PID_WARMUP_SAMPLES = 5;  // Discard first N samples for sensor stabilization
+int pidWarmupCounter = 0;          // Counts warm-up samples (discarded)
 
 PID myPID(&error_distancia, &u_distancia, &rf, Kp, Ki, Kd, DIRECT);
 
@@ -245,7 +248,9 @@ void loop_pid_experiment() {
     if (flag_pid == false) {
         flag_pid = true;
         tiempo_inicial_pid = millis();
+        pidWarmupCounter = 0;  // Reset warm-up counter
         Serial.println("[PID] Experiment started!");
+        Serial.print("  Sensor warm-up: "); Serial.print(PID_WARMUP_SAMPLES); Serial.println(" samples (stabilizing...)");
         myPID.SetMode(AUTOMATIC);
         PIDMotorDirection = 1;
     }
@@ -260,6 +265,20 @@ void loop_pid_experiment() {
     }
 
     read_ToF_sensor();
+
+    // SENSOR WARM-UP: Discard first N readings to let sensor stabilize
+    if (pidWarmupCounter < PID_WARMUP_SAMPLES) {
+        pidWarmupCounter++;
+        MotorSpeed = 0;
+        MotorDirection = PIDMotorDirection;
+        SetMotorControl();
+        // Don't run PID, don't send UDP data during warm-up
+        if (pidWarmupCounter == PID_WARMUP_SAMPLES) {
+            Serial.println("[PID] Sensor warm-up complete, starting control loop...");
+        }
+        delay(SampleTime);
+        return;  // Skip PID computation and UDP send during warm-up
+    }
     distancia = medi;
     error_distancia = x_ref - distancia;
     myPID.Compute();
