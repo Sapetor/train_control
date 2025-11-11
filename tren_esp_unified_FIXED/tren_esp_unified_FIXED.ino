@@ -251,7 +251,8 @@ void loop_pid_experiment() {
         pidWarmupCounter = 0;  // Reset warm-up counter
         Serial.println("[PID] Experiment started!");
         Serial.print("  Sensor warm-up: "); Serial.print(PID_WARMUP_SAMPLES); Serial.println(" samples (stabilizing...)");
-        myPID.SetMode(AUTOMATIC);
+        // DON'T set PID to AUTOMATIC yet - wait until after warm-up
+        myPID.SetMode(MANUAL);  // Keep PID in manual mode during warm-up
         PIDMotorDirection = 1;
     }
 
@@ -275,6 +276,8 @@ void loop_pid_experiment() {
         // Don't run PID, don't send UDP data during warm-up
         if (pidWarmupCounter == PID_WARMUP_SAMPLES) {
             Serial.println("[PID] Sensor warm-up complete, starting control loop...");
+            // NOW activate PID with fresh sensor readings
+            myPID.SetMode(AUTOMATIC);
         }
         delay(SampleTime);
         return;  // Skip PID computation and UDP send during warm-up
