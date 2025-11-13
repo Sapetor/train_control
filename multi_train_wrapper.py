@@ -95,10 +95,12 @@ class MultiTrainApp:
                 }
 
                 # Create dashboard instance for this train
+                # CRITICAL: Pass the shared app so callbacks register on the wrapper's app
                 dashboard = TrainControlDashboard(
                     network_manager=self.network_manager,
                     data_manager=data_manager,
-                    udp_receiver=udp_receiver
+                    udp_receiver=udp_receiver,
+                    app=self.app  # Share the wrapper's app instance
                 )
 
                 # Override data managers with train-specific ones
@@ -251,8 +253,20 @@ class MultiTrainApp:
 
     def _create_train_page(self, train_id):
         """Create page for specific train dashboard"""
+        print(f"\n[ROUTING] Accessing /train/{train_id}")
+
         dashboard = self.train_dashboards[train_id]
         train_config = self.config_manager.trains[train_id]
+
+        print(f"[ROUTING] Dashboard instance: {dashboard}")
+        print(f"[ROUTING] Dashboard has layout: {hasattr(dashboard, 'layout')}")
+
+        if not hasattr(dashboard, 'layout'):
+            print(f"[ROUTING] ERROR: Dashboard has no layout attribute!")
+            return html.Div([
+                html.H1("Error: Dashboard layout not found", style={'color': 'red'}),
+                html.P(f"Train {train_id} dashboard not properly initialized.")
+            ])
 
         # Add back button at top
         back_button = html.Div([
@@ -280,8 +294,9 @@ class MultiTrainApp:
             })
         ], style={'padding': '0 20px 10px'})
 
-        # Get dashboard layout
-        dashboard_content = dashboard.app.layout
+        # Get dashboard layout from instance variable (not app.layout)
+        # Each dashboard stores its layout separately in multi-train mode
+        dashboard_content = dashboard.layout
 
         return html.Div([back_button, train_badge, dashboard_content])
 
