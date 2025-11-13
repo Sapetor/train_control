@@ -1,0 +1,117 @@
+{
+  "_comment_1": "========================================",
+  "_comment_2": "DISTRIBUTED SETUP CONFIGURATION",
+  "_comment_3": "Each PC runs its own dashboard",
+  "_comment_4": "All connect to shared MQTT broker",
+  "_comment_5": "========================================",
+
+  "trains": {
+    "trainA": {
+      "id": "trainA",
+      "name": "Train A",
+      "udp_port": 5555,
+      "_comment_udp": "UDP port this train sends data to (unique per train)",
+      "mqtt_prefix": "trenes/trainA",
+      "_comment_mqtt_prefix": "MQTT topic prefix (unique per train)",
+      "pid_limits": {
+        "kp_max": 250,
+        "ki_max": 150,
+        "kd_max": 150
+      },
+      "enabled": true,
+      "_comment_pc": "PC1 (192.168.137.10) runs this dashboard",
+      "_comment_esp32": "ESP32 A sends UDP to 192.168.137.10:5555"
+    },
+    "trainB": {
+      "id": "trainB",
+      "name": "Train B",
+      "udp_port": 5556,
+      "_comment_udp": "UDP port this train sends data to (unique per train)",
+      "mqtt_prefix": "trenes/trainB",
+      "_comment_mqtt_prefix": "MQTT topic prefix (unique per train)",
+      "pid_limits": {
+        "kp_max": 250,
+        "ki_max": 150,
+        "kd_max": 150
+      },
+      "enabled": true,
+      "_comment_pc": "PC2 (192.168.137.20) runs this dashboard",
+      "_comment_esp32": "ESP32 B sends UDP to 192.168.137.20:5556"
+    },
+    "trainC": {
+      "id": "trainC",
+      "name": "Train C",
+      "udp_port": 5557,
+      "_comment_udp": "UDP port this train sends data to (unique per train)",
+      "mqtt_prefix": "trenes/trainC",
+      "_comment_mqtt_prefix": "MQTT topic prefix (unique per train)",
+      "pid_limits": {
+        "kp_max": 250,
+        "ki_max": 150,
+        "kd_max": 150
+      },
+      "enabled": true,
+      "_comment_pc": "PC3 (192.168.137.30) runs this dashboard",
+      "_comment_esp32": "ESP32 C sends UDP to 192.168.137.30:5557"
+    }
+  },
+
+  "admin_password": "admin123",
+  "_comment_admin": "Not used in distributed mode (no central admin panel)",
+
+  "dashboard_host": "127.0.0.1",
+  "_comment_dashboard_host": "Keep as 127.0.0.1 (localhost) for distributed mode",
+  "_comment_dashboard_host_why": "Each PC accesses its own dashboard locally",
+
+  "dashboard_port": 8050,
+  "_comment_dashboard_port": "Each PC uses same port (8050) since they're on different machines",
+
+  "network_ip": "192.168.137.10",
+  "_comment_network_ip": "IMPORTANT: Change this to EACH PC's own IP address",
+  "_comment_network_ip_pc1": "PC1: 192.168.137.10",
+  "_comment_network_ip_pc2": "PC2: 192.168.137.20",
+  "_comment_network_ip_pc3": "PC3: 192.168.137.30",
+  "_comment_network_ip_note": "Used for UDP receiver - ESP32 sends to this IP",
+
+  "mqtt_broker_ip": "192.168.137.1",
+  "_comment_mqtt_broker_ip": "IP of server PC running Mosquitto (same for all PCs)",
+  "_comment_mqtt_broker_note": "All dashboards connect here for parameter synchronization",
+
+  "_setup_instructions": {
+    "_step_1": "Install Mosquitto on server PC (192.168.137.1)",
+    "_step_2": "Copy this file to each PC and edit 'network_ip' to match PC's IP",
+    "_step_3": "PC1: Set network_ip to 192.168.137.10",
+    "_step_4": "PC2: Set network_ip to 192.168.137.20",
+    "_step_5": "PC3: Set network_ip to 192.168.137.30",
+    "_step_6": "Configure each ESP32 with: SET_TRAIN:trainX:YYYY",
+    "_step_7": "Update ESP32 UDP destination IP to match its PC",
+    "_step_8": "On PC1: python launch_train.py trainA",
+    "_step_9": "On PC2: python launch_train.py trainB",
+    "_step_10": "On PC3: python launch_train.py trainC"
+  },
+
+  "_network_diagram": {
+    "_server_pc": "192.168.137.1 - Mosquitto MQTT Broker",
+    "_pc1": "192.168.137.10 - Dashboard for Train A (port 8050)",
+    "_pc2": "192.168.137.20 - Dashboard for Train B (port 8050)",
+    "_pc3": "192.168.137.30 - Dashboard for Train C (port 8050)",
+    "_esp32_a": "ESP32 A → UDP to 192.168.137.10:5555, MQTT to 192.168.137.1:1883",
+    "_esp32_b": "ESP32 B → UDP to 192.168.137.20:5556, MQTT to 192.168.137.1:1883",
+    "_esp32_c": "ESP32 C → UDP to 192.168.137.30:5557, MQTT to 192.168.137.1:1883"
+  },
+
+  "_verification_commands": {
+    "_check_mqtt_broker": "mosquitto_sub -h 192.168.137.1 -t 'trenes/#' -v",
+    "_test_mqtt_trainA": "mosquitto_pub -h 192.168.137.1 -t 'trenes/trainA/test' -m 'hello'",
+    "_check_udp_pc1": "nc -u -l 5555  (on PC1)",
+    "_find_ip_linux": "ip addr show",
+    "_find_ip_windows": "ipconfig"
+  },
+
+  "_troubleshooting": {
+    "_no_mqtt": "Check mqtt_broker_ip is correct and Mosquitto is running",
+    "_no_udp": "Check network_ip matches PC's actual IP address",
+    "_wrong_train": "Each ESP32 must use correct MQTT prefix (trenes/trainX)",
+    "_port_conflict": "Each ESP32 must use unique UDP port (5555, 5556, 5557)"
+  }
+}
