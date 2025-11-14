@@ -473,11 +473,18 @@ class NetworkManager:
         """Classify interface type based on name and IP"""
         name_lower = interface_name.lower()
 
-        if 'wifi' in name_lower or 'wlan' in name_lower or 'wireless' in name_lower:
+        # Ubuntu/Linux hotspot detection
+        # Hotspots can have names like: wlp3s0, ap0, or virtual interfaces ending in -v
+        if ('hotspot' in name_lower or 'ap' in name_lower or
+            (name_lower.endswith('-v') and len(name_lower) > 10) or
+            ip.startswith('10.42.') or  # Common Ubuntu hotspot range
+            ip.startswith('10.43.')):   # Alternative hotspot range
+            return 'Hotspot'
+        elif 'wifi' in name_lower or 'wlan' in name_lower or 'wireless' in name_lower or 'wlp' in name_lower:
             return 'WiFi'
-        elif 'ethernet' in name_lower or 'eth' in name_lower:
+        elif 'ethernet' in name_lower or 'eth' in name_lower or 'enp' in name_lower or 'eno' in name_lower:
             return 'Ethernet'
-        elif 'vethernet' in name_lower or 'vmware' in name_lower or 'virtualbox' in name_lower:
+        elif 'vethernet' in name_lower or 'vmware' in name_lower or 'virtualbox' in name_lower or 'docker' in name_lower:
             return 'Virtual'
         elif 'vlan' in name_lower:
             return 'VLAN'
