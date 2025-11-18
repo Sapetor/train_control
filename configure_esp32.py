@@ -41,6 +41,7 @@ def main():
     parser.add_argument('--train', '-t', help='Train ID (e.g., trainA)')
     parser.add_argument('--udp', '-u', type=int, help='UDP port (e.g., 5555)')
     parser.add_argument('--broker', '-b', help='MQTT broker IP (e.g., 192.168.1.100)')
+    parser.add_argument('--wifi', '-w', help='WiFi credentials as SSID:Password (e.g., MyNetwork:MyPassword)')
     parser.add_argument('--status', '-s', action='store_true', help='Show current configuration')
     parser.add_argument('--reset', '-r', action='store_true', help='Reset configuration')
     parser.add_argument('--list', '-l', action='store_true', help='List available serial ports')
@@ -96,6 +97,15 @@ def main():
             command = f"SET_BROKER:{args.broker}"
             send_command(ser, command, wait_time=3)
 
+        if args.wifi:
+            # Parse WiFi credentials (format: SSID:Password)
+            if ':' in args.wifi:
+                command = f"SET_WIFI:{args.wifi}"
+                send_command(ser, command, wait_time=3)
+            else:
+                print("❌ Error: WiFi format must be SSID:Password")
+                print("Example: --wifi MyNetwork:MyPassword")
+
         if args.reset:
             print("\n⚠️  WARNING: This will erase all configuration!")
             confirm = input("Type 'yes' to confirm: ")
@@ -105,7 +115,7 @@ def main():
                 print("Reset cancelled")
 
         # If no specific action, show status
-        if not (args.status or args.train or args.broker or args.reset):
+        if not (args.status or args.train or args.broker or args.wifi or args.reset):
             print("\n📊 Showing current configuration...")
             send_command(ser, "STATUS")
             print("\n💡 Tip: Use --help to see all available options")

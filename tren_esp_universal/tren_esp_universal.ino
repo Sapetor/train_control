@@ -3,17 +3,20 @@
  * Supports PID Control + Step Response + Deadband Calibration
  *
  * UNIVERSAL CONFIGURATION:
- * - One firmware for all trains
- * - Configure via serial commands (SET_TRAIN:trainA:5555)
- * - Stores train_id, udp_port, and mqtt_broker in EEPROM
+ * - One firmware for all trains and all networks
+ * - Configure via serial commands (SET_TRAIN, SET_BROKER, SET_WIFI)
+ * - Stores train_id, udp_port, mqtt_broker, and wifi credentials in EEPROM
  * - Dynamic MQTT topic generation
  * - LED status feedback
+ * - No hardcoded credentials - fully configurable
  *
  * CONFIGURATION COMMANDS:
  * - SET_TRAIN:trainID:port       - Configure ESP32 (e.g., SET_TRAIN:trainA:5555)
  * - SET_BROKER:ip                - Set MQTT broker IP (e.g., SET_BROKER:192.168.1.100)
+ * - SET_WIFI:ssid:password       - Set WiFi credentials (e.g., SET_WIFI:MyNetwork:MyPassword)
  * - GET_TRAIN                    - Display current configuration
  * - GET_BROKER                   - Display MQTT broker IP
+ * - GET_WIFI                     - Display WiFi credentials
  * - RESET_TRAIN                  - Clear configuration and restart
  * - STATUS                       - Show connection status
  *
@@ -49,7 +52,10 @@ Preferences preferences;
 String train_id = "";           // e.g., "trainA", "trainB", "trainC"
 int configured_udp_port = 5555; // Dynamic UDP port
 String configured_mqtt_broker = "192.168.137.1"; // MQTT broker IP (configurable)
+String configured_wifi_ssid = "TICS322";         // WiFi SSID (configurable)
+String configured_wifi_password = "esp32esp32";  // WiFi password (configurable)
 bool is_configured = false;     // Configuration flag
+bool wifi_configured = false;   // WiFi credentials configured flag
 String mqtt_prefix = "";        // e.g., "trenes/trainA"
 
 // LED pin for status feedback
@@ -71,11 +77,10 @@ int currentExperimentMode = PID_MODE;
 bool experimentActive = false;
 
 // =============================================================================
-// Network Configuration (WiFi credentials remain static)
+// Network Configuration
 // =============================================================================
-const char* ssid = "TICS322";
-const char* password = "esp32esp32";
-const char* mqtt_server = "192.168.137.1";
+// Note: WiFi credentials and MQTT broker are now configurable via serial
+// Default values used if not configured
 const int localUDPPort = 1111;
 
 // =============================================================================
@@ -178,6 +183,11 @@ void loadConfiguration() {
   preferences.begin("train-config", false);
 
   is_configured = preferences.getBool("configured", false);
+  wifi_configured = preferences.getBool("wifi_configured", false);
+
+  // Load WiFi credentials (always load, even if not fully configured)
+  configured_wifi_ssid = preferences.getString("wifi_ssid", "TICS322");
+  configured_wifi_password = preferences.getString("wifi_password", "esp32esp32");
 
   if (is_configured) {
     train_id = preferences.getString("train_id", "");
@@ -191,6 +201,8 @@ void loadConfiguration() {
     Serial.println("  Train ID: " + train_id);
     Serial.println("  UDP Port: " + String(configured_udp_port));
     Serial.println("  MQTT Broker: " + configured_mqtt_broker);
+    Serial.println("  WiFi SSID: " + configured_wifi_ssid);
+    Serial.println("  WiFi Configured: " + String(wifi_configured ? "YES" : "NO (using defaults)"));
     Serial.println("  MQTT Prefix: " + mqtt_prefix);
   } else {
     // Load broker IP even if not configured (can be set independently)
@@ -240,6 +252,29 @@ void saveBrokerIP(String broker_ip) {
   ESP.restart();
 }
 
+void saveWiFiCredentials(String ssid, String password) {
+  preferences.begin("train-config", false);
+  preferences.putString("wifi_ssid", ssid);
+  preferences.putString("wifi_password", password);
+  preferences.putBool("wifi_configured", true);
+  preferences.end();
+
+  configured_wifi_ssid = ssid;
+  configured_wifi_password = password;
+  wifi_configured = true;
+
+  Serial.println("\nWiFi credentials saved to EEPROM!");
+  Serial.println("  SSID: " + ssid);
+  Serial.println("  Password: " + String(password.length()) + " characters");
+
+  // Flash LED 3 times to indicate success
+  blinkLED(3, 150);
+
+  Serial.println("\nRestarting to connect to WiFi...");
+  delay(1000);
+  ESP.restart();
+}
+
 void resetConfiguration() {
   preferences.begin("train-config", false);
   preferences.clear();
@@ -262,6 +297,8 @@ void printConfiguration() {
     Serial.println("UDP Port: " + String(configured_udp_port));
     Serial.println("MQTT Broker: " + configured_mqtt_broker);
     Serial.println("MQTT Prefix: " + mqtt_prefix);
+    Serial.println("WiFi SSID: " + configured_wifi_ssid);
+    Serial.println("WiFi Configured: " + String(wifi_configured ? "YES" : "NO (using defaults)"));
 
     if (WiFi.status() == WL_CONNECTED) {
       Serial.println("WiFi: CONNECTED");
@@ -288,6 +325,16 @@ void printBrokerIP() {
   Serial.println("MQTT BROKER CONFIGURATION");
   Serial.println("========================================");
   Serial.println("Broker IP: " + configured_mqtt_broker);
+  Serial.println("========================================\n");
+}
+
+void printWiFi() {
+  Serial.println("\n========================================");
+  Serial.println("WIFI CONFIGURATION");
+  Serial.println("========================================");
+  Serial.println("SSID: " + configured_wifi_ssid);
+  Serial.println("Password: " + String(configured_wifi_password.length()) + " characters");
+  Serial.println("Configured: " + String(wifi_configured ? "YES" : "NO (using defaults)"));
   Serial.println("========================================\n");
 }
 
@@ -363,6 +410,33 @@ void checkSerialConfig() {
     else if (command == "GET_BROKER") {
       printBrokerIP();
     }
+    else if (command.startsWith("SET_WIFI:")) {
+      // Parse: SET_WIFI:MySSID:MyPassword
+      int firstColon = command.indexOf(':');
+      int secondColon = command.indexOf(':', firstColon + 1);
+
+      if (secondColon > 0) {
+        String ssid = command.substring(firstColon + 1, secondColon);
+        String password = command.substring(secondColon + 1);
+
+        if (ssid.length() > 0) {
+          Serial.println("\nSetting WiFi credentials...");
+          Serial.println("  SSID: " + ssid);
+          Serial.println("  Password: " + String(password.length()) + " characters");
+
+          saveWiFiCredentials(ssid, password);
+        } else {
+          Serial.println("ERROR: Invalid SSID");
+          Serial.println("Usage: SET_WIFI:MyNetwork:MyPassword");
+        }
+      } else {
+        Serial.println("ERROR: Invalid format");
+        Serial.println("Usage: SET_WIFI:MyNetwork:MyPassword");
+      }
+    }
+    else if (command == "GET_WIFI") {
+      printWiFi();
+    }
     else if (command == "STATUS") {
       printConfiguration();
     }
@@ -371,8 +445,10 @@ void checkSerialConfig() {
       Serial.println("Available commands:");
       Serial.println("  SET_TRAIN:trainID:port - Configure ESP32");
       Serial.println("  SET_BROKER:ip          - Set MQTT broker IP");
+      Serial.println("  SET_WIFI:ssid:password - Set WiFi credentials");
       Serial.println("  GET_TRAIN              - Show configuration");
       Serial.println("  GET_BROKER             - Show broker IP");
+      Serial.println("  GET_WIFI               - Show WiFi credentials");
       Serial.println("  RESET_TRAIN            - Clear configuration");
       Serial.println("  STATUS                 - Show status");
     }
@@ -384,11 +460,13 @@ void enterConfigMode() {
   Serial.println("CONFIGURATION MODE");
   Serial.println("========================================");
   Serial.println("Commands:");
-  Serial.println("  SET_TRAIN:trainA:5555       - Configure this ESP32");
-  Serial.println("  SET_BROKER:192.168.1.100    - Set MQTT broker IP");
-  Serial.println("  GET_TRAIN                   - Show configuration");
-  Serial.println("  GET_BROKER                  - Show broker IP");
-  Serial.println("  RESET_TRAIN                 - Clear configuration");
+  Serial.println("  SET_TRAIN:trainA:5555          - Configure ESP32");
+  Serial.println("  SET_BROKER:192.168.1.100       - Set MQTT broker IP");
+  Serial.println("  SET_WIFI:MySSID:MyPassword     - Set WiFi credentials");
+  Serial.println("  GET_TRAIN                      - Show configuration");
+  Serial.println("  GET_BROKER                     - Show broker IP");
+  Serial.println("  GET_WIFI                       - Show WiFi credentials");
+  Serial.println("  RESET_TRAIN                    - Clear configuration");
   Serial.println("========================================");
   Serial.println("Waiting for configuration...");
   Serial.println("(LED will blink fast until configured)\n");
@@ -925,11 +1003,11 @@ void mqtt_callback(char* topic, byte* payload, unsigned int length) {
 // =============================================================================
 void setup_wifi() {
   Serial.print("Connecting to WiFi: ");
-  Serial.println(ssid);
+  Serial.println(configured_wifi_ssid);
 
   WiFi.mode(WIFI_STA);
   esp_wifi_set_ps(WIFI_PS_NONE);
-  WiFi.begin(ssid, password);
+  WiFi.begin(configured_wifi_ssid.c_str(), configured_wifi_password.c_str());
 
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
