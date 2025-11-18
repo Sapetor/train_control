@@ -473,27 +473,59 @@ class NetworkManager:
         """Classify interface type based on name and IP"""
         name_lower = interface_name.lower()
 
+        # macOS interface detection
+        # en0 is typically WiFi, en1-en9 can be Ethernet or WiFi depending on hardware
+        if name_lower.startswith('en'):
+            # Try to determine if it's WiFi or Ethernet based on typical patterns
+            # en0 is usually WiFi on MacBooks, but can vary
+            if name_lower == 'en0':
+                return 'WiFi/Ethernet'  # Could be either, user will know from IP
+            else:
+                return 'Ethernet/WiFi'
+        # macOS bridge interfaces
+        elif name_lower.startswith('bridge'):
+            return 'Bridge'
+        # macOS VPN/tunnel interfaces
+        elif name_lower.startswith('utun') or name_lower.startswith('ipsec'):
+            return 'VPN'
+        # macOS Apple Wireless Direct Link
+        elif name_lower.startswith('awdl') or name_lower.startswith('llw'):
+            return 'Apple Network'
         # Ubuntu/Linux hotspot detection
         # Hotspots can have names like: wlp3s0, ap0, or virtual interfaces ending in -v
-        if ('hotspot' in name_lower or 'ap' in name_lower or
-            (name_lower.endswith('-v') and len(name_lower) > 10) or
-            ip.startswith('10.42.') or  # Common Ubuntu hotspot range
-            ip.startswith('10.43.')):   # Alternative hotspot range
+        elif ('hotspot' in name_lower or
+              (name_lower.startswith('ap') and len(name_lower) <= 3) or
+              (name_lower.endswith('-v') and len(name_lower) > 10) or
+              ip.startswith('10.42.') or  # Common Ubuntu hotspot range
+              ip.startswith('10.43.')):   # Alternative hotspot range
             return 'Hotspot'
+        # Linux WiFi interfaces
         elif 'wifi' in name_lower or 'wlan' in name_lower or 'wireless' in name_lower or 'wlp' in name_lower:
             return 'WiFi'
+        # Linux Ethernet interfaces
         elif 'ethernet' in name_lower or 'eth' in name_lower or 'enp' in name_lower or 'eno' in name_lower:
             return 'Ethernet'
-        elif 'vethernet' in name_lower or 'vmware' in name_lower or 'virtualbox' in name_lower or 'docker' in name_lower:
+        # Virtual machines and containers
+        elif 'vethernet' in name_lower or 'vmware' in name_lower or 'virtualbox' in name_lower or 'docker' in name_lower or 'veth' in name_lower:
             return 'Virtual'
         elif 'vlan' in name_lower:
             return 'VLAN'
+        # IP-based classification
         elif ip.startswith('192.168.137'):
             return 'Shared Network'
         elif ip.startswith('192.168.1'):
             return 'Home Network'
+        elif ip.startswith('192.168.'):
+            return 'Local Network'
         elif ip.startswith('10.'):
-            return 'Corporate'
+            return 'Private Network'
+        elif ip.startswith('172.'):
+            # Check if it's in private range 172.16.0.0 - 172.31.255.255
+            second_octet = int(ip.split('.')[1])
+            if 16 <= second_octet <= 31:
+                return 'Private Network'
+            else:
+                return 'Network'
         else:
             return 'Network'
 
