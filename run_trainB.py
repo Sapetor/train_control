@@ -79,4 +79,5 @@ if __name__ == '__main__':
     # Run on port 8051
     # Use '0.0.0.0' to allow access from other computers on the network
     # Use '127.0.0.1' for localhost-only access
-    dashboard.run(host='0.0.0.0', port=8051, debug=False, use_reloader=False)
+    # Directly call Flask's run method to ensure correct binding
+    dashboard.app.server.run(host='0.0.0.0', port=8051, debug=False, use_reloader=False)
