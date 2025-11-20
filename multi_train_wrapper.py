@@ -62,6 +62,9 @@ class MultiTrainApp:
         # Initialize train dashboard instances
         self._initialize_train_dashboards()
 
+        # Register callbacks for all trains AFTER all dashboards are created
+        self._register_all_callbacks()
+
         # Setup main app layout and routing
         self._setup_layout()
         self._setup_routing()
@@ -95,12 +98,13 @@ class MultiTrainApp:
                 }
 
                 # Create dashboard instance for this train
-                # CRITICAL: Pass the shared app so callbacks register on the wrapper's app
+                # CRITICAL: Pass skip_setup=True to prevent layout creation until config is set
                 dashboard = TrainControlDashboard(
                     network_manager=self.network_manager,
                     data_manager=data_manager,
                     udp_receiver=udp_receiver,
-                    app=self.app  # Share the wrapper's app instance
+                    app=self.app,  # Share the wrapper's app instance
+                    skip_setup=True  # Don't create layout yet
                 )
 
                 # Override data managers with train-specific ones
@@ -113,12 +117,52 @@ class MultiTrainApp:
                 # Generate and store train-specific MQTT topics
                 dashboard.mqtt_topics = self._generate_train_topics(train_config.mqtt_prefix)
 
+                # Initialize MQTT sync with train-specific topics
+                dashboard._initialize_mqtt_sync()
+
+                # NOW create the layout after all configuration is set
+                dashboard.setup_layout()
+
+                # Store dashboard first
                 self.train_dashboards[train_id] = dashboard
+
+                # Auto-apply saved network configuration to start UDP and MQTT
+                dashboard.auto_apply_saved_config()
 
                 print(f"[MULTI-TRAIN] Initialized {train_config.name} (UDP: {train_config.udp_port}, MQTT: {train_config.mqtt_prefix})")
 
             except Exception as e:
                 print(f"[MULTI-TRAIN ERROR] Failed to initialize {train_id}: {e}")
+
+    def _register_all_callbacks(self):
+        """
+        Register callbacks for all train dashboards.
+
+        In Dash, we can only register each unique callback once per app.
+        Since each train has different component IDs (trainA-*, trainB-*),
+        we need to register separate callbacks for each train.
+
+        We use suppress_callback_exceptions=True to allow dynamic layouts.
+        """
+        print(f"[MULTI-TRAIN] Registering callbacks for {len(self.train_dashboards)} trains...")
+
+        # Register callbacks for ONLY the first train
+        # Dash with routing can't handle multiple callback sets for dynamic layouts
+        # Users must access the specific train URL to get working callbacks
+        if self.train_dashboards:
+            first_train_id = list(self.train_dashboards.keys())[0]
+            first_dashboard = self.train_dashboards[first_train_id]
+
+            try:
+                first_dashboard.setup_callbacks()
+                print(f"[MULTI-TRAIN] ✓ Callbacks registered for {first_train_id}")
+                print(f"[MULTI-TRAIN] ⚠ WARNING: Only {first_train_id} will have working callbacks")
+                print(f"[MULTI-TRAIN] ⚠ Other trains will show layout but tabs won't switch")
+                print(f"[MULTI-TRAIN] ⚠ This is a Dash limitation with dynamic routing")
+            except Exception as e:
+                print(f"[MULTI-TRAIN ERROR] Failed to register callbacks for {first_train_id}: {e}")
+                import traceback
+                traceback.print_exc()
 
     def _generate_train_topics(self, mqtt_prefix):
         """Generate train-specific MQTT topics"""
@@ -253,16 +297,10 @@ class MultiTrainApp:
 
     def _create_train_page(self, train_id):
         """Create page for specific train dashboard"""
-        print(f"\n[ROUTING] Accessing /train/{train_id}")
-
         dashboard = self.train_dashboards[train_id]
         train_config = self.config_manager.trains[train_id]
 
-        print(f"[ROUTING] Dashboard instance: {dashboard}")
-        print(f"[ROUTING] Dashboard has layout: {hasattr(dashboard, 'layout')}")
-
         if not hasattr(dashboard, 'layout'):
-            print(f"[ROUTING] ERROR: Dashboard has no layout attribute!")
             return html.Div([
                 html.H1("Error: Dashboard layout not found", style={'color': 'red'}),
                 html.P(f"Train {train_id} dashboard not properly initialized.")

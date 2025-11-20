@@ -38,6 +38,7 @@ import json
 import uuid
 from dataclasses import dataclass
 from typing import Dict, Optional
+import logging
 
 # =============================================================================
 # Configuration Constants
@@ -473,20 +474,59 @@ class NetworkManager:
         """Classify interface type based on name and IP"""
         name_lower = interface_name.lower()
 
-        if 'wifi' in name_lower or 'wlan' in name_lower or 'wireless' in name_lower:
+        # macOS interface detection
+        # en0 is typically WiFi, en1-en9 can be Ethernet or WiFi depending on hardware
+        if name_lower.startswith('en'):
+            # Try to determine if it's WiFi or Ethernet based on typical patterns
+            # en0 is usually WiFi on MacBooks, but can vary
+            if name_lower == 'en0':
+                return 'WiFi/Ethernet'  # Could be either, user will know from IP
+            else:
+                return 'Ethernet/WiFi'
+        # macOS bridge interfaces
+        elif name_lower.startswith('bridge'):
+            return 'Bridge'
+        # macOS VPN/tunnel interfaces
+        elif name_lower.startswith('utun') or name_lower.startswith('ipsec'):
+            return 'VPN'
+        # macOS Apple Wireless Direct Link
+        elif name_lower.startswith('awdl') or name_lower.startswith('llw'):
+            return 'Apple Network'
+        # Ubuntu/Linux hotspot detection
+        # Hotspots can have names like: wlp3s0, ap0, or virtual interfaces ending in -v
+        elif ('hotspot' in name_lower or
+              (name_lower.startswith('ap') and len(name_lower) <= 3) or
+              (name_lower.endswith('-v') and len(name_lower) > 10) or
+              ip.startswith('10.42.') or  # Common Ubuntu hotspot range
+              ip.startswith('10.43.')):   # Alternative hotspot range
+            return 'Hotspot'
+        # Linux WiFi interfaces
+        elif 'wifi' in name_lower or 'wlan' in name_lower or 'wireless' in name_lower or 'wlp' in name_lower:
             return 'WiFi'
-        elif 'ethernet' in name_lower or 'eth' in name_lower:
+        # Linux Ethernet interfaces
+        elif 'ethernet' in name_lower or 'eth' in name_lower or 'enp' in name_lower or 'eno' in name_lower:
             return 'Ethernet'
-        elif 'vethernet' in name_lower or 'vmware' in name_lower or 'virtualbox' in name_lower:
+        # Virtual machines and containers
+        elif 'vethernet' in name_lower or 'vmware' in name_lower or 'virtualbox' in name_lower or 'docker' in name_lower or 'veth' in name_lower:
             return 'Virtual'
         elif 'vlan' in name_lower:
             return 'VLAN'
+        # IP-based classification
         elif ip.startswith('192.168.137'):
             return 'Shared Network'
         elif ip.startswith('192.168.1'):
             return 'Home Network'
+        elif ip.startswith('192.168.'):
+            return 'Local Network'
         elif ip.startswith('10.'):
-            return 'Corporate'
+            return 'Private Network'
+        elif ip.startswith('172.'):
+            # Check if it's in private range 172.16.0.0 - 172.31.255.255
+            second_octet = int(ip.split('.')[1])
+            if 16 <= second_octet <= 31:
+                return 'Private Network'
+            else:
+                return 'Network'
         else:
             return 'Network'
 
@@ -1064,7 +1104,7 @@ class UDPReceiver:
 class TrainControlDashboard:
     """Enhanced Dash dashboard with network configuration and language support"""
 
-    def __init__(self, network_manager, data_manager, udp_receiver, app=None):
+    def __init__(self, network_manager, data_manager, udp_receiver, app=None, skip_setup=False):
         """
         Initialize Train Control Dashboard.
 
@@ -1073,6 +1113,7 @@ class TrainControlDashboard:
             data_manager: DataManager instance
             udp_receiver: UDPReceiver instance
             app: Optional Dash app instance (for multi-train mode). If None, creates new app.
+            skip_setup: If True, skip setup_layout() and setup_callbacks() (for multi-train mode)
         """
         self.network_manager = network_manager
         self.data_manager = data_manager
@@ -1098,10 +1139,9 @@ class TrainControlDashboard:
 
 
 
-        # Initialize MQTT parameter sync with train-specific topics
-        # Use self.mqtt_topics if set by multi_train_wrapper, else use global MQTT_TOPICS
-        mqtt_topics = getattr(self, 'mqtt_topics', None) or MQTT_TOPICS
-        self.mqtt_sync = MQTTParameterSync(mqtt_topics=mqtt_topics)
+        # Initialize MQTT parameter sync
+        # In multi-train mode with skip_setup=True, defer initialization until mqtt_topics is set
+        self.mqtt_sync = None
         self.confirmed_params = {
             'kp': 0.0,
             'ki': 0.0,
@@ -1109,8 +1149,9 @@ class TrainControlDashboard:
             'reference': 10.0
         }
 
-        # Set up callback for when parameters are confirmed by Arduino
-        self.mqtt_sync.on_params_updated = self._on_params_confirmed
+        # Initialize MQTT sync now if not skipping setup
+        if not skip_setup:
+            self._initialize_mqtt_sync()
 
         # Store zoom state to preserve user zoom when data updates (separate for each graph)
         self.zoom_state = {
@@ -1460,11 +1501,8 @@ class TrainControlDashboard:
             }
         }
 
-        print(f"Dashboard initialized:")
-        print(f"  - Dashboard data_manager ID: {id(self.data_manager)}")
-        print(f"  - Dashboard data_manager CSV: {self.data_manager.csv_file}")
-        print(f"  - UDP receiver data_manager ID: {id(self.udp_receiver.data_manager)}")
-        print(f"  - UDP receiver data_manager CSV: {self.udp_receiver.data_manager.csv_file}")
+        # Dashboard initialization (debug output reduced)
+        # print(f"Dashboard initialized with data_manager: {id(self.data_manager)}")
 
         # Dashboard configuration with custom CSS
         # Removed old CodePen CSS that was hiding 5th tab - keeping only Google Fonts
@@ -1473,18 +1511,21 @@ class TrainControlDashboard:
         # Use provided app (multi-train mode) or create new app (single-train mode)
         if app is not None:
             self.app = app
-            print(f"  - Using shared Dash app (multi-train mode)")
         else:
             self.app = dash.Dash(__name__, external_stylesheets=external_stylesheets,
                                 suppress_callback_exceptions=True)
-            print(f"  - Created new Dash app (single-train mode)")
+
+        # Disable Flask request logging to reduce console spam
+        log = logging.getLogger('werkzeug')
+        log.setLevel(logging.ERROR)
 
         # Setup message queue for push notifications
         self.websocket_messages = queue.Queue(maxsize=100)
-        
+
         # Connect callback to data sources
         self.data_manager.websocket_callback = self._push_websocket_message
-        self.mqtt_sync.websocket_callback = self._push_websocket_message
+        if self.mqtt_sync:  # Only if already initialized (single-train mode)
+            self.mqtt_sync.websocket_callback = self._push_websocket_message
         self.step_data_manager.websocket_callback = self._push_websocket_message
 
         # Modern color scheme
@@ -1503,8 +1544,61 @@ class TrainControlDashboard:
             'train_secondary': '#1e40af' # Train blue
         }
 
-        self.setup_layout()
-        self.setup_callbacks()
+        if not skip_setup:
+            self.setup_layout()
+            self.setup_callbacks()
+
+    def _make_id(self, component_id):
+        """
+        Generate component ID with train prefix if in multi-train mode.
+
+        In multi-train mode, each train dashboard needs unique component IDs to avoid
+        callback conflicts when all trains share the same Dash app instance.
+
+        Args:
+            component_id: Base component ID (e.g., 'kp-input', 'main-tabs')
+
+        Returns:
+            str: Prefixed ID in multi-train mode (e.g., 'trainA-kp-input'),
+                 unchanged ID in single-train mode (e.g., 'kp-input')
+
+        Example:
+            # Single-train mode (train_config is None):
+            self._make_id('kp-input') → 'kp-input'
+
+            # Multi-train mode (train_config.id = 'trainA'):
+            self._make_id('kp-input') → 'trainA-kp-input'
+        """
+        if self.train_config and hasattr(self.train_config, 'id'):
+            return f"{self.train_config.id}-{component_id}"
+        return component_id
+
+    def _get_base_id(self, component_id):
+        """
+        Extract base component ID from potentially prefixed ID.
+
+        In callbacks, trigger IDs will be prefixed in multi-train mode. This method
+        extracts the base ID for comparison.
+
+        Args:
+            component_id: Component ID that may have train prefix (e.g., 'trainA-kp-input')
+
+        Returns:
+            str: Base ID without train prefix (e.g., 'kp-input')
+
+        Example:
+            # Single-train mode:
+            self._get_base_id('kp-input') → 'kp-input'
+
+            # Multi-train mode (train_config.id = 'trainA'):
+            self._get_base_id('trainA-kp-input') → 'kp-input'
+            self._get_base_id('kp-input') → 'kp-input'  # handles unprefixed too
+        """
+        if self.train_config and hasattr(self.train_config, 'id'):
+            prefix = f"{self.train_config.id}-"
+            if component_id.startswith(prefix):
+                return component_id[len(prefix):]
+        return component_id
 
     def _get_csv_glob_pattern(self, experiment_type='pid'):
         """
@@ -1971,26 +2065,86 @@ class TrainControlDashboard:
         except queue.Empty:
             return None
 
+    def _initialize_mqtt_sync(self):
+        """
+        Initialize MQTT parameter sync with correct topics.
+
+        In multi-train mode, this is called AFTER mqtt_topics is set by multi_train_wrapper.
+        In single-train mode, this is called immediately in __init__.
+        """
+        # Use self.mqtt_topics if set (multi-train), else use global MQTT_TOPICS (single-train)
+        mqtt_topics = self.mqtt_topics if self.mqtt_topics else MQTT_TOPICS
+
+        self.mqtt_sync = MQTTParameterSync(mqtt_topics=mqtt_topics)
+        self.mqtt_sync.on_params_updated = self._on_params_confirmed
+
+        # Set websocket callback for push notifications
+        self.mqtt_sync.websocket_callback = self._push_websocket_message
+
+        if self.train_config:
+            print(f"[MQTT INIT] Initialized MQTT sync for {self.train_config.id} with topics: {self.mqtt_topics.get('sync', 'N/A')}")
+        else:
+            print(f"[MQTT INIT] Initialized MQTT sync with global topics")
+
+    def auto_apply_saved_config(self):
+        """
+        Automatically apply saved network configuration on startup.
+        This ensures UDP receiver and MQTT are started without user interaction.
+        """
+        if self.network_manager.selected_ip:
+            print(f"[AUTO-CONFIG] Found saved configuration: {self.network_manager.selected_ip}")
+
+            # Determine which UDP port to use
+            if self.train_config:
+                # Multi-train mode: use train-specific port
+                udp_port = self.train_config.udp_port
+            else:
+                # Single-train mode: use global network manager port
+                udp_port = self.network_manager.udp_port
+
+            # Start UDP receiver with saved configuration
+            self.udp_receiver.ip = self.network_manager.selected_ip
+            self.udp_receiver.port = udp_port
+            success = self.udp_receiver.start()
+
+            if success:
+                print(f"[AUTO-CONFIG] UDP receiver started on {self.network_manager.selected_ip}:{udp_port}")
+
+            # Start MQTT connection
+            mqtt_success = self.mqtt_sync.connect(
+                self.network_manager.selected_ip,
+                self.network_manager.mqtt_port
+            )
+
+            if mqtt_success:
+                print(f"[AUTO-CONFIG] MQTT connected to {self.network_manager.selected_ip}:{self.network_manager.mqtt_port}")
+
+            if success and mqtt_success:
+                print(f"[AUTO-CONFIG] ✓ Auto-configuration complete!")
+            else:
+                print(f"[AUTO-CONFIG] ⚠ Auto-configuration partial (UDP: {success}, MQTT: {mqtt_success})")
+        else:
+            print("[AUTO-CONFIG] No saved configuration found")
+
     def setup_layout(self):
         """Setup the dashboard layout"""
-        print(f"\n=== CREATING DASHBOARD LAYOUT ===")
-        print(f"Deadband tab translation (ES): {self.translations['es'].get('deadband_tab', 'MISSING')}")
-        print(f"Deadband tab translation (EN): {self.translations['en'].get('deadband_tab', 'MISSING')}")
+        # Debug output (commented out to reduce spam)
+        # print(f"\n=== CREATING DASHBOARD LAYOUT ===")
 
         # Create layout and store as instance variable
         self.layout = html.Div([
 
-            dcc.Store(id='language-store', data={'language': 'es'}),
-            dcc.Store(id='network-config-store', data={}),
-            dcc.Store(id='mqtt-params-store', data={'last_update': 0}),
+            dcc.Store(id=self._make_id('language-store'), data={'language': 'es'}),
+            dcc.Store(id=self._make_id('network-config-store'), data={}),
+            dcc.Store(id=self._make_id('mqtt-params-store'), data={'last_update': 0}),
             
             # Data availability trigger for efficient updates
-            dcc.Store(id='ws-message-store', data={}),
-            dcc.Interval(id='fast-update-check', interval=100, n_intervals=0),  # 100ms check for new data
+            dcc.Store(id=self._make_id('ws-message-store'), data={}),
+            dcc.Interval(id=self._make_id('fast-update-check'), interval=100, n_intervals=0),  # 100ms check for new data
 
             # Global data refresh interval (always present)
             dcc.Interval(
-                id='data-refresh-interval',
+                id=self._make_id('data-refresh-interval'),
                 disabled=False,
                 n_intervals=0,
                 interval=1000,  # 1000ms refresh (reduced from 500ms)
@@ -1999,7 +2153,7 @@ class TrainControlDashboard:
 
             # Fast MQTT status refresh interval
             dcc.Interval(
-                id='mqtt-status-refresh',
+                id=self._make_id('mqtt-status-refresh'),
                 disabled=False,
                 n_intervals=0,
                 interval=200,  # 200ms refresh for immediate MQTT updates
@@ -2010,10 +2164,10 @@ class TrainControlDashboard:
             html.Div([
                 html.Div([
                     html.Div([
-                        html.H1(id='app-title', children=self.t('title'),
+                        html.H1(id=self._make_id('app-title'), children=self.t('title'),
                                style={'color': 'white', 'margin': '0', 'fontSize': '20px', 'fontWeight': '600', 'display': 'inline-block'}),
                         # Mode indicator badge
-                        html.Span(id='mode-indicator', children=[
+                        html.Span(id=self._make_id('mode-indicator'), children=[
                             html.Span('PID Control', style={
                                 'backgroundColor': '#007BFF',
                                 'color': 'white',
@@ -2026,15 +2180,15 @@ class TrainControlDashboard:
                             })
                         ]),
                     ], style={'display': 'flex', 'alignItems': 'center'}),
-                    html.P(id='app-subtitle', children=self.t('subtitle'),
+                    html.P(id=self._make_id('app-subtitle'), children=self.t('subtitle'),
                           style={'color': 'rgba(255,255,255,0.8)', 'margin': '3px 0 0 0', 'fontSize': '13px'})
                 ], style={'flex': '1'}),
 
                 html.Div([
-                    html.Label(id='language-label', children=self.t('language'),
+                    html.Label(id=self._make_id('language-label'), children=self.t('language'),
                               style={'color': 'white', 'marginRight': '10px', 'fontSize': '14px'}),
                     dcc.Dropdown(
-                        id='language-dropdown',
+                        id=self._make_id('language-dropdown'),
                         options=[
                             {'label': '🇪🇸 Español', 'value': 'es'},
                             {'label': '🇺🇸 English', 'value': 'en'}
@@ -2056,28 +2210,28 @@ class TrainControlDashboard:
                      'color': 'white', 'padding': '12px 16px', 'borderRadius': '8px', 'marginBottom': '16px'}),
 
             # Experiment controls at the top (always visible) - Compact design without title
-            html.Div(id='top-experiment-controls', style={
+            html.Div(id=self._make_id('top-experiment-controls'), style={
                 'background': '#f8fafc', 'padding': '8px 16px', 'borderRadius': '6px',
                 'border': '1px solid #e5e7eb', 'marginBottom': '12px'
             }, children=[
                 html.Div([
-                    html.Button(id='start-experiment-btn', children=self.t('start_experiment'), n_clicks=0,
+                    html.Button(id=self._make_id('start-experiment-btn'), children=self.t('start_experiment'), n_clicks=0,
                                style={'backgroundColor': self.colors['success'], 'color': 'white', 'border': 'none',
                                      'padding': '6px 16px', 'borderRadius': '6px', 'fontSize': '13px',
                                      'fontWeight': '500', 'marginRight': '12px', 'cursor': 'pointer',
                                      'transition': 'all 0.2s ease', 'minWidth': '110px'}),
-                    html.Button(id='stop-experiment-btn', children=self.t('stop_experiment'), n_clicks=0,
+                    html.Button(id=self._make_id('stop-experiment-btn'), children=self.t('stop_experiment'), n_clicks=0,
                                style={'backgroundColor': self.colors['danger'], 'color': 'white', 'border': 'none',
                                      'padding': '6px 16px', 'borderRadius': '6px', 'fontSize': '13px',
                                      'fontWeight': '500', 'marginRight': '12px', 'cursor': 'pointer',
                                      'transition': 'all 0.2s ease', 'minWidth': '110px'}),
-                    html.Div(id='experiment-status-top', style={'display': 'inline-block', 'marginLeft': '15px',
+                    html.Div(id=self._make_id('experiment-status-top'), style={'display': 'inline-block', 'marginLeft': '15px',
                                                                'fontSize': '13px', 'color': self.colors['text_light']})
                 ], style={'display': 'flex', 'alignItems': 'center', 'justifyContent': 'center'})
             ]),
 
             # Tabs - Simple design matching minimal working example (NO custom styles)
-            dcc.Tabs(id='main-tabs', value='control-tab', children=[
+            dcc.Tabs(id=self._make_id('main-tabs'), value='control-tab', children=[
                 dcc.Tab(label=self.t('network_tab'), value='network-tab'),
                 dcc.Tab(label=self.t('deadband_tab'), value='deadband-tab'),
                 dcc.Tab(label=self.t('control_tab'), value='control-tab'),
@@ -2086,13 +2240,13 @@ class TrainControlDashboard:
             ]),
 
             # Experiment mode store
-            dcc.Store(id='experiment-mode-store', data={'mode': 'pid'}),
+            dcc.Store(id=self._make_id('experiment-mode-store'), data={'mode': 'pid'}),
 
             # Interval to trigger dropdown population on page load (fires once)
-            dcc.Interval(id='page-load-trigger', interval=100, n_intervals=0, max_intervals=1),
+            dcc.Interval(id=self._make_id('page-load-trigger'), interval=100, n_intervals=0, max_intervals=1),
 
             # Tab content
-            html.Div(id='tab-content')
+            html.Div(id=self._make_id('tab-content'))
         ], style={'backgroundColor': self.colors['background'], 'minHeight': '100vh', 'padding': '16px'})
 
         # In single-train mode, assign layout to app
@@ -2100,23 +2254,11 @@ class TrainControlDashboard:
         if not hasattr(self, 'train_config') or self.train_config is None:
             # Single-train mode
             self.app.layout = self.layout
-            print(f"  - Layout assigned to app (single-train mode)")
-        else:
-            # Multi-train mode - layout stored but not assigned to shared app
-            print(f"  - Layout stored as instance variable (multi-train mode, train: {self.train_config.id})")
-
-        print(f"Layout created with 5 tabs:")
-        print(f"  1. {self.t('network_tab')}")
-        print(f"  2. {self.t('deadband_tab')} ← MOVED TO POSITION 2")
-        print(f"  3. {self.t('control_tab')}")
-        print(f"  4. {self.t('step_response_tab')}")
-        print(f"  5. {self.t('data_tab')}")
-        print(f"=== LAYOUT COMPLETE ===\n")
+        # Multi-train mode - layout stored but not assigned to shared app
 
     def create_network_tab(self):
         """Create network configuration tab content"""
         # Force fresh interface detection when creating the tab
-        print("\n[CREATE_NETWORK_TAB] Re-detecting interfaces for dropdown...")
         self.network_manager.detect_interfaces()
         current_options = self.network_manager.get_interface_options()
         print(f"[CREATE_NETWORK_TAB] Got {len(current_options)} options for dropdown:")
@@ -2143,13 +2285,13 @@ class TrainControlDashboard:
                 html.Label(self.t('select_network'),
                           style={'fontWeight': 'bold', 'color': self.colors['text']}),
                 dcc.Dropdown(
-                    id='interface-dropdown',
+                    id=self._make_id('interface-dropdown'),
                     options=current_options,
                     value=self.network_manager.selected_ip if self.network_manager.selected_ip else None,
                     placeholder=self.t('select_interface_placeholder'),
                     style={'marginBottom': '10px'}
                 ),
-                html.Div(id='interface-status', style={'color': self.colors['text']})
+                html.Div(id=self._make_id('interface-status'), style={'color': self.colors['text']})
             ], style={'marginBottom': '20px'}),
 
             # ESP32 Configuration Display
@@ -2158,7 +2300,7 @@ class TrainControlDashboard:
                 html.Div([
                     html.Label(self.t('ip_address_to_configure'),
                               style={'fontWeight': 'bold'}),
-                    html.Div(id='esp32-ip-display',
+                    html.Div(id=self._make_id('esp32-ip-display'),
                             style={'fontSize': '24px', 'fontWeight': 'bold',
                                   'color': self.colors['train_primary'], 'marginBottom': '10px'}),
                     html.P(self.t('use_ip_address'),
@@ -2172,26 +2314,26 @@ class TrainControlDashboard:
                 html.H4(self.t('port_configuration'), style={'color': self.colors['text']}),
                 html.Div([
                     html.Label(self.t('udp_port')),
-                    dcc.Input(id='udp-port-input', type='number', value=5555,
+                    dcc.Input(id=self._make_id('udp-port-input'), type='number', value=5555,
                              style={'marginLeft': '10px', 'marginRight': '20px'}),
                     html.Label(self.t('mqtt_port')),
-                    dcc.Input(id='mqtt-port-input', type='number', value=1883,
+                    dcc.Input(id=self._make_id('mqtt-port-input'), type='number', value=1883,
                              style={'marginLeft': '10px'})
                 ])
             ], style={'marginBottom': '20px'}),
 
             # Control buttons
             html.Div([
-                html.Button(self.t('apply_configuration'), id='apply-config-btn',
+                html.Button(self.t('apply_configuration'), id=self._make_id('apply-config-btn'),
                            style={'marginRight': '10px', 'backgroundColor': self.colors['success']}),
-                html.Button(self.t('test_connection'), id='test-connection-btn',
+                html.Button(self.t('test_connection'), id=self._make_id('test-connection-btn'),
                            style={'marginRight': '10px', 'backgroundColor': self.colors['warning']}),
-                html.Button(self.t('refresh_interfaces'), id='refresh-interfaces-btn',
+                html.Button(self.t('refresh_interfaces'), id=self._make_id('refresh-interfaces-btn'),
                            style={'backgroundColor': self.colors['secondary']})
             ]),
 
             # Status display
-            html.Div(id='network-status', style={'marginTop': '20px'})
+            html.Div(id=self._make_id('network-status'), style={'marginTop': '20px'})
         ])
 
     def create_control_tab(self):
@@ -2211,15 +2353,15 @@ class TrainControlDashboard:
                             html.Div([
                                 html.Label(f"{self.t('kp_label')}: ", style={'fontWeight': '500', 'color': self.colors['text'], 'fontSize': '12px', 'marginBottom': '4px'}),
                                 html.Div([
-                                    dcc.Input(id='kp-input', type='number', value=0, min=0, max=250, step=0.1,
+                                    dcc.Input(id=self._make_id('kp-input'), type='number', value=0, min=0, max=250, step=0.1,
                                              style={'width': '70px', 'height': '24px', 'fontSize': '11px', 'padding': '2px 4px', 'marginRight': '4px'}),
-                                    html.Button(self.t('send_button'), id='kp-send-btn', n_clicks=0,
+                                    html.Button(self.t('send_button'), id=self._make_id('kp-send-btn'), n_clicks=0,
                                                style={'height': '24px', 'fontSize': '10px', 'padding': '0 6px', 'backgroundColor': self.colors['accent'],
                                                      'color': 'white', 'border': 'none', 'borderRadius': '3px', 'cursor': 'pointer'})
                                 ], style={'display': 'flex', 'alignItems': 'center'})
                             ], style={'marginBottom': '6px'}),
                             dcc.Slider(
-                                id='kp-slider',
+                                id=self._make_id('kp-slider'),
                                 min=0, max=150, value=0, step=0.1,
                                 marks={i*100: str(i*100) for i in range(3)},
                                 tooltip={'placement': 'bottom', 'always_visible': False}
@@ -2231,15 +2373,15 @@ class TrainControlDashboard:
                             html.Div([
                                 html.Label(f"{self.t('ki_label')}: ", style={'fontWeight': '500', 'color': self.colors['text'], 'fontSize': '12px', 'marginBottom': '4px'}),
                                 html.Div([
-                                    dcc.Input(id='ki-input', type='number', value=0, min=0, max=250, step=0.1,
+                                    dcc.Input(id=self._make_id('ki-input'), type='number', value=0, min=0, max=250, step=0.1,
                                              style={'width': '70px', 'height': '24px', 'fontSize': '11px', 'padding': '2px 4px', 'marginRight': '4px'}),
-                                    html.Button(self.t('send_button'), id='ki-send-btn', n_clicks=0,
+                                    html.Button(self.t('send_button'), id=self._make_id('ki-send-btn'), n_clicks=0,
                                                style={'height': '24px', 'fontSize': '10px', 'padding': '0 6px', 'backgroundColor': self.colors['accent'],
                                                      'color': 'white', 'border': 'none', 'borderRadius': '3px', 'cursor': 'pointer'})
                                 ], style={'display': 'flex', 'alignItems': 'center'})
                             ], style={'marginBottom': '6px'}),
                             dcc.Slider(
-                                id='ki-slider',
+                                id=self._make_id('ki-slider'),
                                 min=0, max=150, value=0, step=0.1,
                                 marks={i*100: str(i*100) for i in range(3)},
                                 tooltip={'placement': 'bottom', 'always_visible': False}
@@ -2251,15 +2393,15 @@ class TrainControlDashboard:
                             html.Div([
                                 html.Label(f"{self.t('kd_label')}: ", style={'fontWeight': '500', 'color': self.colors['text'], 'fontSize': '12px', 'marginBottom': '4px'}),
                                 html.Div([
-                                    dcc.Input(id='kd-input', type='number', value=0, min=0, max=250, step=0.1,
+                                    dcc.Input(id=self._make_id('kd-input'), type='number', value=0, min=0, max=250, step=0.1,
                                              style={'width': '70px', 'height': '24px', 'fontSize': '11px', 'padding': '2px 4px', 'marginRight': '4px'}),
-                                    html.Button(self.t('send_button'), id='kd-send-btn', n_clicks=0,
+                                    html.Button(self.t('send_button'), id=self._make_id('kd-send-btn'), n_clicks=0,
                                                style={'height': '24px', 'fontSize': '10px', 'padding': '0 6px', 'backgroundColor': self.colors['accent'],
                                                      'color': 'white', 'border': 'none', 'borderRadius': '3px', 'cursor': 'pointer'})
                                 ], style={'display': 'flex', 'alignItems': 'center'})
                             ], style={'marginBottom': '6px'}),
                             dcc.Slider(
-                                id='kd-slider',
+                                id=self._make_id('kd-slider'),
                                 min=0, max=150, value=0, step=0.1,
                                 marks={i*100: str(i*100) for i in range(3)},
                                 tooltip={'placement': 'bottom', 'always_visible': False}
@@ -2271,15 +2413,15 @@ class TrainControlDashboard:
                             html.Div([
                                 html.Label(f"{self.t('ref_label')}: ", style={'fontWeight': '500', 'color': self.colors['text'], 'fontSize': '12px', 'marginBottom': '4px'}),
                                 html.Div([
-                                    dcc.Input(id='ref-input', type='number', value=10, min=1, max=100, step=0.5,
+                                    dcc.Input(id=self._make_id('ref-input'), type='number', value=10, min=1, max=100, step=0.5,
                                              style={'width': '70px', 'height': '24px', 'fontSize': '11px', 'padding': '2px 4px', 'marginRight': '4px'}),
-                                    html.Button(self.t('send_button'), id='ref-send-btn', n_clicks=0,
+                                    html.Button(self.t('send_button'), id=self._make_id('ref-send-btn'), n_clicks=0,
                                                style={'height': '24px', 'fontSize': '10px', 'padding': '0 6px', 'backgroundColor': self.colors['accent'],
                                                      'color': 'white', 'border': 'none', 'borderRadius': '3px', 'cursor': 'pointer'})
                                 ], style={'display': 'flex', 'alignItems': 'center'})
                             ], style={'marginBottom': '6px'}),
                             dcc.Slider(
-                                id='reference-slider',
+                                id=self._make_id('reference-slider'),
                                 min=1, max=100, value=10, step=0.5,
                                 marks={i*50: f"{i*50}" for i in range(3)},
                                 tooltip={'placement': 'bottom', 'always_visible': False}
@@ -2292,8 +2434,8 @@ class TrainControlDashboard:
                     # Connection Status Card
                     html.Div([
                         html.H4(self.t('connection_status'), style={'color': self.colors['primary'], 'marginBottom': '15px'}),
-                        html.Div(id='connection-status-indicator', style={'marginBottom': '10px'}),
-                        html.Div(id='data-status', style={'color': self.colors['text_light'], 'fontSize': '14px'})
+                        html.Div(id=self._make_id('connection-status-indicator'), style={'marginBottom': '10px'}),
+                        html.Div(id=self._make_id('data-status'), style={'color': self.colors['text_light'], 'fontSize': '14px'})
                     ], style={'background': 'white', 'padding': '20px', 'borderRadius': '12px',
                              'boxShadow': '0 2px 8px rgba(0,0,0,0.1)', 'marginBottom': '20px'}),
 
@@ -2301,7 +2443,7 @@ class TrainControlDashboard:
                     html.Div([
                         html.Button(
                             self.t('download_csv'),
-                            id='download-csv-btn-control',
+                            id=self._make_id('download-csv-btn-control'),
                             n_clicks=0,
                             style={
                                 'width': '100%',
@@ -2315,7 +2457,7 @@ class TrainControlDashboard:
                                 'fontWeight': '500'
                             }
                         ),
-                        dcc.Download(id="download-csv-file-control")
+                        dcc.Download(id=self._make_id("download-csv-file-control"))
                     ], style={'background': 'white', 'padding': '15px', 'borderRadius': '8px',
                              'boxShadow': '0 1px 4px rgba(0,0,0,0.1)'})
 
@@ -2325,7 +2467,7 @@ class TrainControlDashboard:
                 html.Div([
                     html.Div([
                         html.H4(self.t('realtime_graph'), style={'textAlign': 'center', 'color': self.colors['primary'], 'marginBottom': '8px', 'fontSize': '16px'}),
-                        dcc.Graph(id='realtime-graph',
+                        dcc.Graph(id=self._make_id('realtime-graph'),
                                  figure=px.line(),
                                  style={'height': '350px'})
                     ], style={'background': 'white', 'padding': '12px', 'borderRadius': '8px',
@@ -2343,7 +2485,7 @@ class TrainControlDashboard:
             # Data connection status panel
             html.Div([
                 html.H4(self.t('esp32_connection_status'), style={'color': self.colors['text']}),
-                html.Div(id='detailed-connection-status',
+                html.Div(id=self._make_id('detailed-connection-status'),
                         style={'backgroundColor': '#f8f9fa', 'padding': '15px', 'borderRadius': '5px'})
             ], style={'marginBottom': '20px'}),
 
@@ -2352,7 +2494,7 @@ class TrainControlDashboard:
                 html.H4(self.t('historical_data'), style={'color': self.colors['text']}),
                 html.P(self.t('data_current_session'),
                       style={'color': self.colors['text']}),
-                dcc.Graph(id='historical-graph', figure=px.line())
+                dcc.Graph(id=self._make_id('historical-graph'), figure=px.line())
             ], style={'marginBottom': '20px'}),
 
             # File information and download
@@ -2360,9 +2502,9 @@ class TrainControlDashboard:
                 html.H4(self.t('data_storage'), style={'color': self.colors['text']}),
                 html.Div([
                     html.Label(self.t('csv_file_path_label'), style={'fontWeight': 'bold'}),
-                    html.Div(id='csv-file-path', style={'fontFamily': 'monospace', 'marginTop': '5px', 'marginBottom': '10px'}),
+                    html.Div(id=self._make_id('csv-file-path'), style={'fontFamily': 'monospace', 'marginTop': '5px', 'marginBottom': '10px'}),
                     html.Button(
-                        id='download-csv-btn',
+                        id=self._make_id('download-csv-btn'),
                         children=self.t('download_csv'),
                         n_clicks=0,
                         style={
@@ -2376,7 +2518,7 @@ class TrainControlDashboard:
                             'marginTop': '5px'
                         }
                     ),
-                    dcc.Download(id="download-csv-file")
+                    dcc.Download(id=self._make_id("download-csv-file"))
                 ])
             ])
         ])
@@ -2400,11 +2542,11 @@ class TrainControlDashboard:
                                 html.Label(f"{self.t('step_amplitude')}", 
                                          style={'fontWeight': '500', 'fontSize': '13px'}),
                                 html.Div([
-                                    dcc.Input(id='amplitude-input', type='number',
+                                    dcc.Input(id=self._make_id('amplitude-input'), type='number',
                                             value=3.0, min=0, max=8.4, step=0.1,
                                             style={'width': '60px', 'height': '28px', 'fontSize': '12px',
                                                   'padding': '4px', 'marginRight': '6px'}),
-                                    html.Button('↑', id='amplitude-send-btn', n_clicks=0,
+                                    html.Button('↑', id=self._make_id('amplitude-send-btn'), n_clicks=0,
                                               style={'height': '28px', 'width': '28px', 'fontSize': '14px',
                                                     'padding': '0', 'backgroundColor': self.colors['accent'],
                                                     'color': 'white', 'border': 'none', 'borderRadius': '4px',
@@ -2412,7 +2554,7 @@ class TrainControlDashboard:
                                 ], style={'display': 'flex', 'alignItems': 'center'})
                             ], style={'display': 'flex', 'alignItems': 'center', 'justifyContent': 'space-between',
                                      'marginBottom': '8px'}),
-                            dcc.Slider(id='amplitude-slider', min=0, max=8.4, value=3.0, step=0.1,
+                            dcc.Slider(id=self._make_id('amplitude-slider'), min=0, max=8.4, value=3.0, step=0.1,
                                      marks={i: f'{i}V' for i in range(0, 9, 2)},
                                      tooltip={'placement': 'bottom', 'always_visible': True})
                         ], style={'marginBottom': '15px', 'padding': '10px', 'backgroundColor': '#f8f9fa', 
@@ -2424,11 +2566,11 @@ class TrainControlDashboard:
                                 html.Label(f"{self.t('step_duration')}", 
                                          style={'fontWeight': '500', 'fontSize': '13px'}),
                                 html.Div([
-                                    dcc.Input(id='duration-input', type='number',
+                                    dcc.Input(id=self._make_id('duration-input'), type='number',
                                             value=2.0, min=0.5, max=5.0, step=0.1,
                                             style={'width': '60px', 'height': '28px', 'fontSize': '12px',
                                                   'padding': '4px', 'marginRight': '6px'}),
-                                    html.Button('↑', id='duration-send-btn', n_clicks=0,
+                                    html.Button('↑', id=self._make_id('duration-send-btn'), n_clicks=0,
                                               style={'height': '28px', 'width': '28px', 'fontSize': '14px',
                                                     'padding': '0', 'backgroundColor': self.colors['accent'],
                                                     'color': 'white', 'border': 'none', 'borderRadius': '4px',
@@ -2436,7 +2578,7 @@ class TrainControlDashboard:
                                 ], style={'display': 'flex', 'alignItems': 'center'})
                             ], style={'display': 'flex', 'alignItems': 'center', 'justifyContent': 'space-between',
                                      'marginBottom': '8px'}),
-                            dcc.Slider(id='duration-slider', min=0.5, max=5.0, value=2.0, step=0.1,
+                            dcc.Slider(id=self._make_id('duration-slider'), min=0.5, max=5.0, value=2.0, step=0.1,
                                      marks={0.5: '0.5s', 1: '1s', 2: '2s', 3: '3s', 4: '4s', 5: '5s'},
                                      tooltip={'placement': 'bottom', 'always_visible': True})
                         ], style={'marginBottom': '15px', 'padding': '10px', 'backgroundColor': '#f8f9fa',
@@ -2448,7 +2590,7 @@ class TrainControlDashboard:
                                      style={'fontWeight': '500', 'fontSize': '13px', 'marginBottom': '8px',
                                            'display': 'block'}),
                             dcc.RadioItems(
-                                id='direction-radio',
+                                id=self._make_id('direction-radio'),
                                 options=[
                                     {'label': f"  {self.t('forward')}", 'value': 1},
                                     {'label': f"  {self.t('reverse')}", 'value': 0}
@@ -2466,7 +2608,7 @@ class TrainControlDashboard:
                             html.Label(f"{self.t('battery_voltage')}: 8.4V", 
                                      style={'fontSize': '11px', 'color': '#6b7280', 'marginBottom': '5px',
                                            'display': 'block'}),
-                            dcc.Slider(id='vbatt-slider', min=7.0, max=8.4, value=8.4, step=0.1,
+                            dcc.Slider(id=self._make_id('vbatt-slider'), min=7.0, max=8.4, value=8.4, step=0.1,
                                      marks={7.0: '7.0V', 8.4: '8.4V'},
                                      tooltip={'placement': 'bottom', 'always_visible': False})
                         ], style={'marginBottom': '15px'}),
@@ -2475,7 +2617,7 @@ class TrainControlDashboard:
                         html.Div([
                             html.H5(self.t('step_esp32_status'),
                                    style={'fontSize': '12px', 'marginBottom': '8px', 'color': self.colors['text']}),
-                            html.Div(id='step-esp32-status',
+                            html.Div(id=self._make_id('step-esp32-status'),
                                    style={'fontSize': '11px', 'padding': '8px', 'backgroundColor': '#f8f9fa',
                                          'borderRadius': '4px', 'minHeight': '50px'})
                         ], style={'marginBottom': '15px'})
@@ -2487,7 +2629,7 @@ class TrainControlDashboard:
                     html.Div([
                         html.Button(
                             self.t('download_csv'),
-                            id='download-csv-btn-step',
+                            id=self._make_id('download-csv-btn-step'),
                             n_clicks=0,
                             style={
                                 'width': '100%',
@@ -2501,7 +2643,7 @@ class TrainControlDashboard:
                                 'fontWeight': '500'
                             }
                         ),
-                        dcc.Download(id="download-csv-file-step")
+                        dcc.Download(id=self._make_id("download-csv-file-step"))
                     ], style={'background': 'white', 'padding': '15px', 'borderRadius': '8px',
                              'boxShadow': '0 1px 4px rgba(0,0,0,0.1)'})
 
@@ -2513,7 +2655,7 @@ class TrainControlDashboard:
                         html.H4(self.t('step_response_graph'),
                                style={'textAlign': 'center', 'color': self.colors['primary'],
                                      'marginBottom': '8px', 'fontSize': '16px'}),
-                        dcc.Graph(id='step-response-graph',
+                        dcc.Graph(id=self._make_id('step-response-graph'),
                                  figure=px.line(),
                                  style={'height': '400px'})
                     ], style={'background': 'white', 'padding': '12px', 'borderRadius': '8px',
@@ -2541,7 +2683,7 @@ class TrainControlDashboard:
                                  style={'fontWeight': '500', 'fontSize': '13px', 'marginBottom': '8px',
                                        'display': 'block'}),
                         dcc.RadioItems(
-                            id='deadband-direction-radio',
+                            id=self._make_id('deadband-direction-radio'),
                             options=[
                                 {'label': f"  {self.t('forward')}", 'value': 1},
                                 {'label': f"  {self.t('reverse')}", 'value': 0}
@@ -2559,7 +2701,7 @@ class TrainControlDashboard:
                         html.Label(f"{self.t('motion_threshold')}:",
                                  style={'fontWeight': '500', 'fontSize': '13px', 'marginBottom': '8px',
                                        'display': 'block'}),
-                        dcc.Input(id='deadband-threshold-input', type='number',
+                        dcc.Input(id=self._make_id('deadband-threshold-input'), type='number',
                                 value=0.08, min=0.01, max=1.0, step=0.01,
                                 style={'width': '80px', 'height': '28px', 'fontSize': '12px',
                                       'padding': '4px'})
@@ -2568,18 +2710,18 @@ class TrainControlDashboard:
 
                     # Start/Stop Buttons
                     html.Div([
-                        html.Button(self.t('start_calibration'), id='deadband-start-btn', n_clicks=0,
+                        html.Button(self.t('start_calibration'), id=self._make_id('deadband-start-btn'), n_clicks=0,
                                   style={'backgroundColor': '#28A745', 'color': 'white', 'padding': '10px 20px',
                                         'border': 'none', 'borderRadius': '6px', 'fontSize': '14px',
                                         'cursor': 'pointer', 'marginRight': '10px'}),
-                        html.Button(self.t('stop_calibration'), id='deadband-stop-btn', n_clicks=0,
+                        html.Button(self.t('stop_calibration'), id=self._make_id('deadband-stop-btn'), n_clicks=0,
                                   style={'backgroundColor': '#DC3545', 'color': 'white', 'padding': '10px 20px',
                                         'border': 'none', 'borderRadius': '6px', 'fontSize': '14px',
                                         'cursor': 'pointer'})
                     ], style={'marginBottom': '20px'}),
 
                     # Status Display
-                    html.Div(id='deadband-status',
+                    html.Div(id=self._make_id('deadband-status'),
                            style={'fontSize': '13px', 'padding': '12px', 'backgroundColor': '#f8f9fa',
                                  'borderRadius': '6px', 'marginBottom': '15px', 'minHeight': '60px'}),
 
@@ -2587,11 +2729,11 @@ class TrainControlDashboard:
                     html.Div([
                         html.H5(self.t('calibration_result'),
                                style={'fontSize': '14px', 'marginBottom': '10px', 'color': self.colors['text']}),
-                        html.Div(id='deadband-result',
+                        html.Div(id=self._make_id('deadband-result'),
                                style={'fontSize': '32px', 'fontWeight': 'bold', 'color': '#28A745',
                                      'textAlign': 'center', 'padding': '20px', 'backgroundColor': '#f8f9fa',
                                      'borderRadius': '6px', 'marginBottom': '15px'}),
-                        html.Button(self.t('apply_to_pid'), id='deadband-apply-btn', n_clicks=0,
+                        html.Button(self.t('apply_to_pid'), id=self._make_id('deadband-apply-btn'), n_clicks=0,
                                   disabled=True,
                                   style={'width': '100%', 'padding': '10px', 'backgroundColor': '#007BFF',
                                         'color': 'white', 'border': 'none', 'borderRadius': '6px',
@@ -2605,7 +2747,7 @@ class TrainControlDashboard:
                 html.Div([
                     html.Button(
                         self.t('download_csv'),
-                        id='download-csv-btn-deadband',
+                        id=self._make_id('download-csv-btn-deadband'),
                         n_clicks=0,
                         style={
                             'width': '100%',
@@ -2619,7 +2761,7 @@ class TrainControlDashboard:
                             'fontWeight': '500'
                         }
                     ),
-                    dcc.Download(id="download-csv-file-deadband")
+                    dcc.Download(id=self._make_id("download-csv-file-deadband"))
                 ], style={'background': 'white', 'padding': '15px', 'borderRadius': '8px',
                          'boxShadow': '0 1px 4px rgba(0,0,0,0.1)'})
 
@@ -2632,7 +2774,7 @@ class TrainControlDashboard:
                     html.H4(self.t('deadband_pwm_graph'),
                            style={'textAlign': 'center', 'color': self.colors['primary'],
                                  'marginBottom': '8px', 'fontSize': '14px'}),
-                    dcc.Graph(id='deadband-pwm-graph',
+                    dcc.Graph(id=self._make_id('deadband-pwm-graph'),
                              figure=px.line(),
                              style={'height': '250px'})
                 ], style={'background': 'white', 'padding': '12px', 'borderRadius': '8px',
@@ -2643,7 +2785,7 @@ class TrainControlDashboard:
                     html.H4(self.t('deadband_distance_graph'),
                            style={'textAlign': 'center', 'color': self.colors['primary'],
                                  'marginBottom': '8px', 'fontSize': '14px'}),
-                    dcc.Graph(id='deadband-distance-graph',
+                    dcc.Graph(id=self._make_id('deadband-distance-graph'),
                              figure=px.line(),
                              style={'height': '250px'})
                 ], style={'background': 'white', 'padding': '12px', 'borderRadius': '8px',
@@ -2654,7 +2796,7 @@ class TrainControlDashboard:
                     html.H4(self.t('deadband_curve_graph'),
                            style={'textAlign': 'center', 'color': self.colors['primary'],
                                  'marginBottom': '8px', 'fontSize': '14px'}),
-                    dcc.Graph(id='deadband-curve-graph',
+                    dcc.Graph(id=self._make_id('deadband-curve-graph'),
                              figure=px.line(),
                              style={'height': '300px'})
                 ], style={'background': 'white', 'padding': '12px', 'borderRadius': '8px',
@@ -2665,7 +2807,7 @@ class TrainControlDashboard:
         ], style={'display': 'flex', 'gap': '20px'}),
 
         # Update interval for deadband graphs
-        dcc.Interval(id='graph-update-interval', interval=500, n_intervals=0)
+        dcc.Interval(id=self._make_id('graph-update-interval'), interval=500, n_intervals=0)
     ])
 
     def setup_callbacks(self):
@@ -2673,8 +2815,8 @@ class TrainControlDashboard:
 
         # Fast data availability check - triggers updates when new data arrives
         @self.app.callback(
-            Output('ws-message-store', 'data'),
-            Input('fast-update-check', 'n_intervals'),
+            Output(self._make_id('ws-message-store'), 'data'),
+            Input(self._make_id('fast-update-check'), 'n_intervals'),
             prevent_initial_call=True
         )
         def check_data_availability(n):
@@ -2687,9 +2829,9 @@ class TrainControlDashboard:
 
         # Mode indicator update callback
         @self.app.callback(
-            Output('mode-indicator', 'children'),
-            [Input('main-tabs', 'value'),
-             Input('language-store', 'data')]
+            Output(self._make_id('mode-indicator'), 'children'),
+            [Input(self._make_id('main-tabs'), 'value'),
+             Input(self._make_id('language-store'), 'data')]
         )
         def update_mode_indicator(active_tab, language_data):
             """Update the mode indicator badge based on active tab"""
@@ -2717,14 +2859,14 @@ class TrainControlDashboard:
 
         # Language change callback
         @self.app.callback(
-            [Output('language-store', 'data'),
-             Output('app-title', 'children'),
-             Output('app-subtitle', 'children'),
-             Output('language-label', 'children'),
-             Output('start-experiment-btn', 'children'),
-             Output('stop-experiment-btn', 'children'),
-             Output('main-tabs', 'children')],
-             Input('language-dropdown', 'value')
+            [Output(self._make_id('language-store'), 'data'),
+             Output(self._make_id('app-title'), 'children'),
+             Output(self._make_id('app-subtitle'), 'children'),
+             Output(self._make_id('language-label'), 'children'),
+             Output(self._make_id('start-experiment-btn'), 'children'),
+             Output(self._make_id('stop-experiment-btn'), 'children'),
+             Output(self._make_id('main-tabs'), 'children')],
+             Input(self._make_id('language-dropdown'), 'value')
         )
         def change_language(selected_language):
             self.current_language = selected_language
@@ -2751,18 +2893,18 @@ class TrainControlDashboard:
              Output('ki-value', 'children'),
              Output('kd-value', 'children'),
              Output('ref-value', 'children')],
-            [Input('kp-slider', 'value'),
-             Input('ki-slider', 'value'),
-             Input('kd-slider', 'value'),
-             Input('reference-slider', 'value')]
+            [Input(self._make_id('kp-slider'), 'value'),
+             Input(self._make_id('ki-slider'), 'value'),
+             Input(self._make_id('kd-slider'), 'value'),
+             Input(self._make_id('reference-slider'), 'value')]
         )
         def update_slider_values(kp, ki, kd, ref):
             return f"{kp:.1f}", f"{ki:.1f}", f"{kd:.1f}", f"{ref:.1f}cm"
 
         # Track active tab for experiment mode
         @self.app.callback(
-            Output('experiment-mode-store', 'data'),
-            Input('main-tabs', 'value')
+            Output(self._make_id('experiment-mode-store'), 'data'),
+            Input(self._make_id('main-tabs'), 'value')
         )
         def track_experiment_mode(active_tab):
             """Track which experiment mode is active based on tab"""
@@ -2804,9 +2946,9 @@ class TrainControlDashboard:
         
         # Track active tab for experiment mode
         @self.app.callback(
-            Output('tab-content', 'children'),
-            [Input('main-tabs', 'value'),
-             Input('language-store', 'data')]
+            Output(self._make_id('tab-content'), 'children'),
+            [Input(self._make_id('main-tabs'), 'value'),
+             Input(self._make_id('language-store'), 'data')]
         )
         def render_tab_content(active_tab, language_data):
             print(f"\n[RENDER_TAB] Switching to tab: {active_tab}")
@@ -2828,14 +2970,14 @@ class TrainControlDashboard:
 
         # Network configuration callbacks
         @self.app.callback(
-            [Output('esp32-ip-display', 'children'),
-             Output('interface-status', 'children'),
-             Output('network-status', 'children')],
-            [Input('interface-dropdown', 'value'),
-             Input('apply-config-btn', 'n_clicks'),
-             Input('refresh-interfaces-btn', 'n_clicks')],
-            [State('udp-port-input', 'value'),
-             State('mqtt-port-input', 'value')],
+            [Output(self._make_id('esp32-ip-display'), 'children'),
+             Output(self._make_id('interface-status'), 'children'),
+             Output(self._make_id('network-status'), 'children')],
+            [Input(self._make_id('interface-dropdown'), 'value'),
+             Input(self._make_id('apply-config-btn'), 'n_clicks'),
+             Input(self._make_id('refresh-interfaces-btn'), 'n_clicks')],
+            [State(self._make_id('udp-port-input'), 'value'),
+             State(self._make_id('mqtt-port-input'), 'value')],
             prevent_initial_call=True
         )
         def handle_network_config(selected_ip, apply_clicks, refresh_clicks, udp_port, mqtt_port):
@@ -2849,8 +2991,9 @@ class TrainControlDashboard:
 
             if ctx.triggered:
                 trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
+                base_id = self._get_base_id(trigger_id)
 
-                if trigger_id == 'refresh-interfaces-btn':
+                if base_id == 'refresh-interfaces-btn':
                     self.network_manager.detect_interfaces()
                     # Preserve current selection if available
                     current_ip = self.network_manager.selected_ip
@@ -2858,7 +3001,7 @@ class TrainControlDashboard:
                         return current_ip, f"{self.t('selected')}: {current_ip}", self.t('interfaces_refreshed')
                     return self.t('select_an_interface'), self.t('interfaces_refreshed'), self.t('network_interfaces_updated')
 
-                elif trigger_id == 'apply-config-btn' and selected_ip:
+                elif base_id == 'apply-config-btn' and selected_ip:
                     # Apply configuration
                     self.network_manager.set_selected_ip(selected_ip)
                     self.network_manager.update_ports(udp_port, mqtt_port)
@@ -2905,19 +3048,20 @@ class TrainControlDashboard:
 
         # Populate dropdown on page load and when refresh button is clicked
         @self.app.callback(
-            [Output('interface-dropdown', 'options'),
-             Output('interface-dropdown', 'value')],
-            [Input('page-load-trigger', 'n_intervals'),
-             Input('main-tabs', 'value'),
-             Input('refresh-interfaces-btn', 'n_clicks')]
+            [Output(self._make_id('interface-dropdown'), 'options'),
+             Output(self._make_id('interface-dropdown'), 'value')],
+            [Input(self._make_id('page-load-trigger'), 'n_intervals'),
+             Input(self._make_id('main-tabs'), 'value'),
+             Input(self._make_id('refresh-interfaces-btn'), 'n_clicks')]
         )
         def populate_interface_dropdown(n_intervals, tab_value, n_clicks):
             ctx = callback_context
             if ctx.triggered:
                 trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
-                if trigger_id == 'refresh-interfaces-btn':
+                base_id = self._get_base_id(trigger_id)
+                if base_id == 'refresh-interfaces-btn':
                     print("[CALLBACK] Refresh button clicked, re-detecting...")
-                elif trigger_id == 'page-load-trigger':
+                elif base_id == 'page-load-trigger':
                     print("[CALLBACK] Page loaded, populating dropdown...")
                 else:
                     print(f"[CALLBACK] Tab changed to {tab_value}, updating dropdown...")
@@ -2935,18 +3079,18 @@ class TrainControlDashboard:
             return options, default_value
 
         @self.app.callback(
-            [Output('udp-port-input', 'value'),
-             Output('mqtt-port-input', 'value')],
-            Input('refresh-interfaces-btn', 'n_clicks')
+            [Output(self._make_id('udp-port-input'), 'value'),
+             Output(self._make_id('mqtt-port-input'), 'value')],
+            Input(self._make_id('refresh-interfaces-btn'), 'n_clicks')
         )
         def load_saved_ports(n_clicks):
             return self.network_manager.udp_port, self.network_manager.mqtt_port
 
         # PID control callbacks - step parameters sent automatically via MQTT callbacks
         @self.app.callback(
-            Output('experiment-status-top', 'children'),
-            [Input('start-experiment-btn', 'n_clicks'),
-             Input('stop-experiment-btn', 'n_clicks')],
+            Output(self._make_id('experiment-status-top'), 'children'),
+            [Input(self._make_id('start-experiment-btn'), 'n_clicks'),
+             Input(self._make_id('stop-experiment-btn'), 'n_clicks')],
             prevent_initial_call=True
         )
         def handle_experiment_control(start_clicks, stop_clicks):
@@ -2954,8 +3098,9 @@ class TrainControlDashboard:
 
             if ctx.triggered:
                 trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
+                base_id = self._get_base_id(trigger_id)
 
-                if trigger_id == 'start-experiment-btn' and start_clicks:
+                if base_id == 'start-experiment-btn' and start_clicks:
                     if self.network_manager.selected_ip:
                         # Determine which experiment mode based on active tab
                         if self.experiment_mode == 'step':
@@ -3013,7 +3158,7 @@ class TrainControlDashboard:
                     else:
                         return html.Div(self.t('configure_network_warning'), style={'color': self.colors['danger']})
 
-                elif trigger_id == 'stop-experiment-btn' and stop_clicks:
+                elif base_id == 'stop-experiment-btn' and stop_clicks:
                     if self.experiment_mode == 'step':
                         self.step_data_manager.stop_experiment()
                         publish.single(self.get_topic('step_sync'), 'False', hostname=self.network_manager.mqtt_broker_ip)
@@ -3029,19 +3174,19 @@ class TrainControlDashboard:
 
         # PID parameter callbacks - sliders send immediately, inputs need button clicks
         @self.app.callback(
-            Output('data-status', 'children'),
-            [Input('kp-slider', 'value'),
-             Input('ki-slider', 'value'),
-             Input('kd-slider', 'value'),
-             Input('reference-slider', 'value'),
-             Input('kp-send-btn', 'n_clicks'),
-             Input('ki-send-btn', 'n_clicks'),
-             Input('kd-send-btn', 'n_clicks'),
-             Input('ref-send-btn', 'n_clicks')],
-            [State('kp-input', 'value'),
-             State('ki-input', 'value'),
-             State('kd-input', 'value'),
-             State('ref-input', 'value')]
+            Output(self._make_id('data-status'), 'children'),
+            [Input(self._make_id('kp-slider'), 'value'),
+             Input(self._make_id('ki-slider'), 'value'),
+             Input(self._make_id('kd-slider'), 'value'),
+             Input(self._make_id('reference-slider'), 'value'),
+             Input(self._make_id('kp-send-btn'), 'n_clicks'),
+             Input(self._make_id('ki-send-btn'), 'n_clicks'),
+             Input(self._make_id('kd-send-btn'), 'n_clicks'),
+             Input(self._make_id('ref-send-btn'), 'n_clicks')],
+            [State(self._make_id('kp-input'), 'value'),
+             State(self._make_id('ki-input'), 'value'),
+             State(self._make_id('kd-input'), 'value'),
+             State(self._make_id('ref-input'), 'value')]
         )
         def update_pid_parameters(kp_slider, ki_slider, kd_slider, ref_slider,
                                  kp_send_clicks, ki_send_clicks, kd_send_clicks, ref_send_clicks,
@@ -3051,23 +3196,24 @@ class TrainControlDashboard:
             # Determine which control was used based on what triggered the callback
             if ctx.triggered:
                 trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
+                base_id = self._get_base_id(trigger_id)
 
                 # Handle different triggers: sliders vs send buttons
-                if trigger_id == 'kp-slider':
+                if base_id == 'kp-slider':
                     kp, ki, kd, reference = kp_slider, ki_slider, kd_slider, ref_slider
-                elif trigger_id == 'kp-send-btn':
+                elif base_id == 'kp-send-btn':
                     kp, ki, kd, reference = kp_input if kp_input is not None else kp_slider, ki_slider, kd_slider, ref_slider
-                elif trigger_id == 'ki-slider':
+                elif base_id == 'ki-slider':
                     kp, ki, kd, reference = kp_slider, ki_slider, kd_slider, ref_slider
-                elif trigger_id == 'ki-send-btn':
+                elif base_id == 'ki-send-btn':
                     kp, ki, kd, reference = kp_slider, ki_input if ki_input is not None else ki_slider, kd_slider, ref_slider
-                elif trigger_id == 'kd-slider':
+                elif base_id == 'kd-slider':
                     kp, ki, kd, reference = kp_slider, ki_slider, kd_slider, ref_slider
-                elif trigger_id == 'kd-send-btn':
+                elif base_id == 'kd-send-btn':
                     kp, ki, kd, reference = kp_slider, ki_slider, kd_input if kd_input is not None else kd_slider, ref_slider
-                elif trigger_id == 'reference-slider':
+                elif base_id == 'reference-slider':
                     kp, ki, kd, reference = kp_slider, ki_slider, kd_slider, ref_slider
-                elif trigger_id == 'ref-send-btn':
+                elif base_id == 'ref-send-btn':
                     kp, ki, kd, reference = kp_slider, ki_slider, kd_slider, ref_input if ref_input is not None else ref_slider
                 else:
                     # Default to slider values
@@ -3108,10 +3254,10 @@ class TrainControlDashboard:
 
         # Real-time data visualization with zoom preservation
         @self.app.callback(
-            Output('realtime-graph', 'figure'),
-            [Input('data-refresh-interval', 'n_intervals'),
-             Input('realtime-graph', 'relayoutData'),
-             Input('ws-message-store', 'data')],
+            Output(self._make_id('realtime-graph'), 'figure'),
+            [Input(self._make_id('data-refresh-interval'), 'n_intervals'),
+             Input(self._make_id('realtime-graph'), 'relayoutData'),
+             Input(self._make_id('ws-message-store'), 'data')],
             prevent_initial_call=True
         )
         def update_realtime_graph(n_intervals, relayout_data, ws_data):
@@ -3119,17 +3265,18 @@ class TrainControlDashboard:
             ctx = callback_context
             if ctx.triggered:
                 trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
-                if trigger_id == 'realtime-graph':
+                base_id = self._get_base_id(trigger_id)
+                if base_id == 'realtime-graph':
                     self._handle_zoom_state('realtime-graph', relayout_data)
 
             return self._create_data_graph('realtime-graph')
 
         # Connection status callback - now responds to language changes and MQTT updates
         @self.app.callback(
-            Output('connection-status-indicator', 'children'),
-            [Input('data-refresh-interval', 'n_intervals'),
-             Input('mqtt-status-refresh', 'n_intervals'),
-             Input('language-store', 'data')],
+            Output(self._make_id('connection-status-indicator'), 'children'),
+            [Input(self._make_id('data-refresh-interval'), 'n_intervals'),
+             Input(self._make_id('mqtt-status-refresh'), 'n_intervals'),
+             Input(self._make_id('language-store'), 'data')],
             prevent_initial_call=False
         )
         def update_connection_status(n_intervals, mqtt_intervals, language_data):
@@ -3186,9 +3333,9 @@ class TrainControlDashboard:
 
         # Detailed connection status for data tab
         @self.app.callback(
-            Output('detailed-connection-status', 'children'),
-            [Input('data-refresh-interval', 'n_intervals'),
-             Input('mqtt-status-refresh', 'n_intervals')],
+            Output(self._make_id('detailed-connection-status'), 'children'),
+            [Input(self._make_id('data-refresh-interval'), 'n_intervals'),
+             Input(self._make_id('mqtt-status-refresh'), 'n_intervals')],
             prevent_initial_call=True
         )
         def update_detailed_connection_status(n_intervals, mqtt_intervals):
@@ -3255,24 +3402,25 @@ class TrainControlDashboard:
 
         # Historical graph for data tab with zoom preservation
         @self.app.callback(
-            Output('historical-graph', 'figure'),
-            [Input('data-refresh-interval', 'n_intervals'),
-             Input('historical-graph', 'relayoutData')]
+            Output(self._make_id('historical-graph'), 'figure'),
+            [Input(self._make_id('data-refresh-interval'), 'n_intervals'),
+             Input(self._make_id('historical-graph'), 'relayoutData')]
         )
         def update_historical_graph(n_intervals, relayout_data):
             # Handle zoom state updates from user interaction for historical graph
             ctx = callback_context
             if ctx.triggered:
                 trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
-                if trigger_id == 'historical-graph':
+                base_id = self._get_base_id(trigger_id)
+                if base_id == 'historical-graph':
                     self._handle_zoom_state('historical-graph', relayout_data)
 
             return self._create_data_graph('historical-graph', title_prefix="Historical: ")
 
         # Data tab callbacks
         @self.app.callback(
-            Output('csv-file-path', 'children'),
-            Input('data-refresh-interval', 'n_intervals'),
+            Output(self._make_id('csv-file-path'), 'children'),
+            Input(self._make_id('data-refresh-interval'), 'n_intervals'),
             prevent_initial_call=True
         )
         def update_csv_path(n_intervals):
@@ -3311,8 +3459,8 @@ class TrainControlDashboard:
                 return None
 
         @self.app.callback(
-            Output("download-csv-file-control", "data"),
-            Input("download-csv-btn-control", "n_clicks"),
+            Output(self._make_id("download-csv-file-control"), "data"),
+            Input(self._make_id("download-csv-btn-control"), "n_clicks"),
             prevent_initial_call=True
         )
         def download_csv_control(n_clicks):
@@ -3321,8 +3469,8 @@ class TrainControlDashboard:
             return None
 
         @self.app.callback(
-            Output("download-csv-file-step", "data"),
-            Input("download-csv-btn-step", "n_clicks"),
+            Output(self._make_id("download-csv-file-step"), "data"),
+            Input(self._make_id("download-csv-btn-step"), "n_clicks"),
             prevent_initial_call=True
         )
         def download_csv_step(n_clicks):
@@ -3331,8 +3479,8 @@ class TrainControlDashboard:
             return None
 
         @self.app.callback(
-            Output("download-csv-file-deadband", "data"),
-            Input("download-csv-btn-deadband", "n_clicks"),
+            Output(self._make_id("download-csv-file-deadband"), "data"),
+            Input(self._make_id("download-csv-btn-deadband"), "n_clicks"),
             prevent_initial_call=True
         )
         def download_csv_deadband(n_clicks):
@@ -3341,8 +3489,8 @@ class TrainControlDashboard:
             return None
 
         @self.app.callback(
-            Output("download-csv-file", "data"),
-            Input("download-csv-btn", "n_clicks"),
+            Output(self._make_id("download-csv-file"), "data"),
+            Input(self._make_id("download-csv-btn"), "n_clicks"),
             prevent_initial_call=True
         )
         def download_csv_data_tab(n_clicks):
@@ -3353,53 +3501,54 @@ class TrainControlDashboard:
 
         # Step Response Parameter Callbacks - with input boxes and sliders
         @self.app.callback(
-            Output('step-esp32-status', 'children'),
-            [Input('amplitude-slider', 'value'),
-             Input('amplitude-send-btn', 'n_clicks'),
-             Input('duration-slider', 'value'),
-             Input('duration-send-btn', 'n_clicks'),
-             Input('vbatt-slider', 'value'),
-             Input('direction-radio', 'value'),
-             Input('mqtt-status-refresh', 'n_intervals')],
-            [State('amplitude-input', 'value'),
-             State('duration-input', 'value')]
+            Output(self._make_id('step-esp32-status'), 'children'),
+            [Input(self._make_id('amplitude-slider'), 'value'),
+             Input(self._make_id('amplitude-send-btn'), 'n_clicks'),
+             Input(self._make_id('duration-slider'), 'value'),
+             Input(self._make_id('duration-send-btn'), 'n_clicks'),
+             Input(self._make_id('vbatt-slider'), 'value'),
+             Input(self._make_id('direction-radio'), 'value'),
+             Input(self._make_id('mqtt-status-refresh'), 'n_intervals')],
+            [State(self._make_id('amplitude-input'), 'value'),
+             State(self._make_id('duration-input'), 'value')]
         )
         def update_step_parameters(amp_slider, amp_clicks, dur_slider, dur_clicks,
                                   vbatt, direction, mqtt_intervals, 
                                   amp_input, dur_input):
             ctx = callback_context
-            
+
             if ctx.triggered:
                 trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
+                base_id = self._get_base_id(trigger_id)
 
                 # Only log actual parameter changes, not refresh intervals
-                if trigger_id != 'mqtt-status-refresh':
+                if base_id != 'mqtt-status-refresh':
                     print(f"[STEP PARAM] Callback triggered by: {trigger_id}")
 
                 # Send MQTT updates
                 if self.network_manager.selected_ip:
                     try:
-                        if trigger_id == 'amplitude-slider':
+                        if base_id == 'amplitude-slider':
                             publish.single(self.get_topic('step_amplitude'), str(amp_slider),
                                          hostname=self.network_manager.mqtt_broker_ip)
                             print(f"[STEP PARAM] Sent amplitude = {amp_slider}")
-                        elif trigger_id == 'amplitude-send-btn' and amp_input is not None:
+                        elif base_id == 'amplitude-send-btn' and amp_input is not None:
                             publish.single(self.get_topic('step_amplitude'), str(amp_input),
                                          hostname=self.network_manager.mqtt_broker_ip)
                             print(f"[STEP PARAM] Sent amplitude = {amp_input}")
-                        elif trigger_id == 'duration-slider':
+                        elif base_id == 'duration-slider':
                             publish.single(self.get_topic('step_time'), str(dur_slider),
                                          hostname=self.network_manager.mqtt_broker_ip)
                             print(f"[STEP PARAM] Sent time = {dur_slider}")
-                        elif trigger_id == 'duration-send-btn' and dur_input is not None:
+                        elif base_id == 'duration-send-btn' and dur_input is not None:
                             publish.single(self.get_topic('step_time'), str(dur_input),
                                          hostname=self.network_manager.mqtt_broker_ip)
                             print(f"[STEP PARAM] Sent time = {dur_input}")
-                        elif trigger_id == 'vbatt-slider':
+                        elif base_id == 'vbatt-slider':
                             publish.single(self.get_topic('step_vbatt'), str(vbatt),
                                          hostname=self.network_manager.mqtt_broker_ip)
                             print(f"[STEP PARAM] Sent vbatt = {vbatt}")
-                        elif trigger_id == 'direction-radio':
+                        elif base_id == 'direction-radio':
                             publish.single(self.get_topic('step_direction'), direction,
                                          hostname=self.network_manager.mqtt_broker_ip)
                             print(f"[STEP PARAM] Sent direction = {direction}")
@@ -3416,8 +3565,8 @@ class TrainControlDashboard:
 
         # Step Response Graph Update
         @self.app.callback(
-            Output('step-response-graph', 'figure'),
-            [Input('data-refresh-interval', 'n_intervals')]
+            Output(self._make_id('step-response-graph'), 'figure'),
+            [Input(self._make_id('data-refresh-interval'), 'n_intervals')]
         )
         def update_step_graph(n_intervals):
             """Update step response graph with 3 traces: distance, step input, PWM"""
@@ -3509,14 +3658,14 @@ class TrainControlDashboard:
         # =====================================================================
 
         @self.app.callback(
-            [Output('deadband-status', 'children'),
-             Output('deadband-result', 'children'),
-             Output('deadband-apply-btn', 'disabled')],
-            [Input('deadband-start-btn', 'n_clicks'),
-             Input('deadband-stop-btn', 'n_clicks'),
-             Input('graph-update-interval', 'n_intervals')],
-            [State('deadband-direction-radio', 'value'),
-             State('deadband-threshold-input', 'value')],
+            [Output(self._make_id('deadband-status'), 'children'),
+             Output(self._make_id('deadband-result'), 'children'),
+             Output(self._make_id('deadband-apply-btn'), 'disabled')],
+            [Input(self._make_id('deadband-start-btn'), 'n_clicks'),
+             Input(self._make_id('deadband-stop-btn'), 'n_clicks'),
+             Input(self._make_id('graph-update-interval'), 'n_intervals')],
+            [State(self._make_id('deadband-direction-radio'), 'value'),
+             State(self._make_id('deadband-threshold-input'), 'value')],
             prevent_initial_call=True
         )
         def handle_deadband_calibration(start_clicks, stop_clicks, n_intervals,
@@ -3526,17 +3675,18 @@ class TrainControlDashboard:
         
             if not ctx.triggered:
                 raise PreventUpdate
-        
+
             trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
-        
+            base_id = self._get_base_id(trigger_id)
+
             # Check network configuration
             if not self.network_manager.selected_ip:
                 return (html.Div(self.t('configure_network_warning'),
                                 style={'color': '#DC3545'}),
                         "", True)
-        
+
             # Start calibration
-            if trigger_id == 'deadband-start-btn' and start_clicks > 0:
+            if base_id == 'deadband-start-btn' and start_clicks > 0:
                 try:
                     print(f"[DEADBAND] Start button clicked. Network config:")
                     print(f"  - Selected IP: {self.network_manager.selected_ip}")
@@ -3578,9 +3728,9 @@ class TrainControlDashboard:
                 except Exception as e:
                     return (html.Div(f"Error: {str(e)}", style={'color': '#DC3545'}),
                             "", True)
-        
+
             # Stop calibration
-            elif trigger_id == 'deadband-stop-btn' and stop_clicks > 0:
+            elif base_id == 'deadband-stop-btn' and stop_clicks > 0:
                 try:
                     print(f"[DEADBAND] Sending sync=False to {self.get_topic('deadband_sync')} @ {self.network_manager.mqtt_broker_ip}")
                     publish.single(self.get_topic('deadband_sync'), "False",
@@ -3595,9 +3745,9 @@ class TrainControlDashboard:
                 except Exception as e:
                     return (html.Div(f"Error: {str(e)}", style={'color': '#DC3545'}),
                             "", True)
-        
+
             # Status updates (check for calibration result)
-            elif trigger_id == 'graph-update-interval':
+            elif base_id == 'graph-update-interval':
                 # Check if calibration has completed
                 if self.deadband_data_manager.calibrated_deadband > 0:
                     return (html.Div(self.t('calibration_complete'),
@@ -3619,9 +3769,9 @@ class TrainControlDashboard:
         # ==========================
         
         @self.app.callback(
-            Output('deadband-status', 'children', allow_duplicate=True),
-            Input('deadband-apply-btn', 'n_clicks'),
-            State('deadband-result', 'children'),
+            Output(self._make_id('deadband-status'), 'children', allow_duplicate=True),
+            Input(self._make_id('deadband-apply-btn'), 'n_clicks'),
+            State(self._make_id('deadband-result'), 'children'),
             prevent_initial_call=True
         )
         def apply_deadband_to_pid(n_clicks, result_text):
@@ -3647,8 +3797,8 @@ class TrainControlDashboard:
         # ==========================
         
         @self.app.callback(
-            Output('deadband-pwm-graph', 'figure'),
-            Input('graph-update-interval', 'n_intervals')
+            Output(self._make_id('deadband-pwm-graph'), 'figure'),
+            Input(self._make_id('graph-update-interval'), 'n_intervals')
         )
         def update_deadband_pwm_graph(n):
             """Update PWM vs Time graph"""
@@ -3711,8 +3861,8 @@ class TrainControlDashboard:
         # ==========================
         
         @self.app.callback(
-            Output('deadband-distance-graph', 'figure'),
-            Input('graph-update-interval', 'n_intervals')
+            Output(self._make_id('deadband-distance-graph'), 'figure'),
+            Input(self._make_id('graph-update-interval'), 'n_intervals')
         )
         def update_deadband_distance_graph(n):
             """Update Distance vs Time graph"""
@@ -3794,8 +3944,8 @@ class TrainControlDashboard:
         # ==========================
         
         @self.app.callback(
-            Output('deadband-curve-graph', 'figure'),
-            Input('graph-update-interval', 'n_intervals')
+            Output(self._make_id('deadband-curve-graph'), 'figure'),
+            Input(self._make_id('graph-update-interval'), 'n_intervals')
         )
         def update_deadband_curve_graph(n):
             """Update PWM vs Distance calibration curve"""
