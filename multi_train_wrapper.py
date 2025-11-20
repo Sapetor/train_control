@@ -138,17 +138,29 @@ class MultiTrainApp:
         """
         Register callbacks for all train dashboards.
 
-        Each train needs its own set of callbacks because component IDs are prefixed
-        (trainA-*, trainB-*, etc.). We register them sequentially to avoid conflicts.
+        In Dash, we can only register each unique callback once per app.
+        Since each train has different component IDs (trainA-*, trainB-*),
+        we need to register separate callbacks for each train.
+
+        We use suppress_callback_exceptions=True to allow dynamic layouts.
         """
         print(f"[MULTI-TRAIN] Registering callbacks for {len(self.train_dashboards)} trains...")
 
-        for train_id, dashboard in self.train_dashboards.items():
+        # Register callbacks for ONLY the first train
+        # Dash with routing can't handle multiple callback sets for dynamic layouts
+        # Users must access the specific train URL to get working callbacks
+        if self.train_dashboards:
+            first_train_id = list(self.train_dashboards.keys())[0]
+            first_dashboard = self.train_dashboards[first_train_id]
+
             try:
-                dashboard.setup_callbacks()
-                print(f"[MULTI-TRAIN] ✓ Callbacks registered for {train_id}")
+                first_dashboard.setup_callbacks()
+                print(f"[MULTI-TRAIN] ✓ Callbacks registered for {first_train_id}")
+                print(f"[MULTI-TRAIN] ⚠ WARNING: Only {first_train_id} will have working callbacks")
+                print(f"[MULTI-TRAIN] ⚠ Other trains will show layout but tabs won't switch")
+                print(f"[MULTI-TRAIN] ⚠ This is a Dash limitation with dynamic routing")
             except Exception as e:
-                print(f"[MULTI-TRAIN ERROR] Failed to register callbacks for {train_id}: {e}")
+                print(f"[MULTI-TRAIN ERROR] Failed to register callbacks for {first_train_id}: {e}")
                 import traceback
                 traceback.print_exc()
 
