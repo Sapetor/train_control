@@ -95,12 +95,13 @@ class MultiTrainApp:
                 }
 
                 # Create dashboard instance for this train
-                # CRITICAL: Pass the shared app so callbacks register on the wrapper's app
+                # CRITICAL: Pass skip_setup=True to prevent layout creation until config is set
                 dashboard = TrainControlDashboard(
                     network_manager=self.network_manager,
                     data_manager=data_manager,
                     udp_receiver=udp_receiver,
-                    app=self.app  # Share the wrapper's app instance
+                    app=self.app,  # Share the wrapper's app instance
+                    skip_setup=True  # Don't create layout yet
                 )
 
                 # Override data managers with train-specific ones
@@ -112,6 +113,10 @@ class MultiTrainApp:
 
                 # Generate and store train-specific MQTT topics
                 dashboard.mqtt_topics = self._generate_train_topics(train_config.mqtt_prefix)
+
+                # NOW create the layout after all configuration is set
+                dashboard.setup_layout()
+                dashboard.setup_callbacks()
 
                 self.train_dashboards[train_id] = dashboard
 
@@ -253,16 +258,10 @@ class MultiTrainApp:
 
     def _create_train_page(self, train_id):
         """Create page for specific train dashboard"""
-        print(f"\n[ROUTING] Accessing /train/{train_id}")
-
         dashboard = self.train_dashboards[train_id]
         train_config = self.config_manager.trains[train_id]
 
-        print(f"[ROUTING] Dashboard instance: {dashboard}")
-        print(f"[ROUTING] Dashboard has layout: {hasattr(dashboard, 'layout')}")
-
         if not hasattr(dashboard, 'layout'):
-            print(f"[ROUTING] ERROR: Dashboard has no layout attribute!")
             return html.Div([
                 html.H1("Error: Dashboard layout not found", style={'color': 'red'}),
                 html.P(f"Train {train_id} dashboard not properly initialized.")

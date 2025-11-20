@@ -1103,7 +1103,7 @@ class UDPReceiver:
 class TrainControlDashboard:
     """Enhanced Dash dashboard with network configuration and language support"""
 
-    def __init__(self, network_manager, data_manager, udp_receiver, app=None):
+    def __init__(self, network_manager, data_manager, udp_receiver, app=None, skip_setup=False):
         """
         Initialize Train Control Dashboard.
 
@@ -1112,6 +1112,7 @@ class TrainControlDashboard:
             data_manager: DataManager instance
             udp_receiver: UDPReceiver instance
             app: Optional Dash app instance (for multi-train mode). If None, creates new app.
+            skip_setup: If True, skip setup_layout() and setup_callbacks() (for multi-train mode)
         """
         self.network_manager = network_manager
         self.data_manager = data_manager
@@ -1499,11 +1500,8 @@ class TrainControlDashboard:
             }
         }
 
-        print(f"Dashboard initialized:")
-        print(f"  - Dashboard data_manager ID: {id(self.data_manager)}")
-        print(f"  - Dashboard data_manager CSV: {self.data_manager.csv_file}")
-        print(f"  - UDP receiver data_manager ID: {id(self.udp_receiver.data_manager)}")
-        print(f"  - UDP receiver data_manager CSV: {self.udp_receiver.data_manager.csv_file}")
+        # Dashboard initialization (debug output reduced)
+        # print(f"Dashboard initialized with data_manager: {id(self.data_manager)}")
 
         # Dashboard configuration with custom CSS
         # Removed old CodePen CSS that was hiding 5th tab - keeping only Google Fonts
@@ -1512,11 +1510,9 @@ class TrainControlDashboard:
         # Use provided app (multi-train mode) or create new app (single-train mode)
         if app is not None:
             self.app = app
-            print(f"  - Using shared Dash app (multi-train mode)")
         else:
             self.app = dash.Dash(__name__, external_stylesheets=external_stylesheets,
                                 suppress_callback_exceptions=True)
-            print(f"  - Created new Dash app (single-train mode)")
 
         # Setup message queue for push notifications
         self.websocket_messages = queue.Queue(maxsize=100)
@@ -1542,8 +1538,9 @@ class TrainControlDashboard:
             'train_secondary': '#1e40af' # Train blue
         }
 
-        self.setup_layout()
-        self.setup_callbacks()
+        if not skip_setup:
+            self.setup_layout()
+            self.setup_callbacks()
 
     def _get_csv_glob_pattern(self, experiment_type='pid'):
         """
@@ -2012,9 +2009,8 @@ class TrainControlDashboard:
 
     def setup_layout(self):
         """Setup the dashboard layout"""
-        print(f"\n=== CREATING DASHBOARD LAYOUT ===")
-        print(f"Deadband tab translation (ES): {self.translations['es'].get('deadband_tab', 'MISSING')}")
-        print(f"Deadband tab translation (EN): {self.translations['en'].get('deadband_tab', 'MISSING')}")
+        # Debug output (commented out to reduce spam)
+        # print(f"\n=== CREATING DASHBOARD LAYOUT ===")
 
         # Create layout and store as instance variable
         self.layout = html.Div([
@@ -2139,23 +2135,11 @@ class TrainControlDashboard:
         if not hasattr(self, 'train_config') or self.train_config is None:
             # Single-train mode
             self.app.layout = self.layout
-            print(f"  - Layout assigned to app (single-train mode)")
-        else:
-            # Multi-train mode - layout stored but not assigned to shared app
-            print(f"  - Layout stored as instance variable (multi-train mode, train: {self.train_config.id})")
-
-        print(f"Layout created with 5 tabs:")
-        print(f"  1. {self.t('network_tab')}")
-        print(f"  2. {self.t('deadband_tab')} ← MOVED TO POSITION 2")
-        print(f"  3. {self.t('control_tab')}")
-        print(f"  4. {self.t('step_response_tab')}")
-        print(f"  5. {self.t('data_tab')}")
-        print(f"=== LAYOUT COMPLETE ===\n")
+        # Multi-train mode - layout stored but not assigned to shared app
 
     def create_network_tab(self):
         """Create network configuration tab content"""
         # Force fresh interface detection when creating the tab
-        print("\n[CREATE_NETWORK_TAB] Re-detecting interfaces for dropdown...")
         self.network_manager.detect_interfaces()
         current_options = self.network_manager.get_interface_options()
         print(f"[CREATE_NETWORK_TAB] Got {len(current_options)} options for dropdown:")
