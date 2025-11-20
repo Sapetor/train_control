@@ -43,8 +43,13 @@ if __name__ == '__main__':
     data_manager = DataManager(train_id='trainC')
     udp_receiver = UDPReceiver(data_manager)
 
-    # Create dashboard
-    dashboard = TrainControlDashboard(network_manager, data_manager, udp_receiver)
+    # Create dashboard with skip_setup=True (we'll configure before setting up)
+    dashboard = TrainControlDashboard(
+        network_manager,
+        data_manager,
+        udp_receiver,
+        skip_setup=True  # Don't create layout/callbacks yet
+    )
 
     # Set train config for multi-train mode
     dashboard.train_config = train_config
@@ -59,6 +64,10 @@ if __name__ == '__main__':
 
     # Initialize MQTT with train-specific topics
     dashboard._initialize_mqtt_sync()
+
+    # NOW create layout and callbacks with correct train config
+    dashboard.setup_layout()
+    dashboard.setup_callbacks()
 
     # Run on port 8052
     dashboard.run(host='127.0.0.1', port=8052, debug=False, use_reloader=False)
