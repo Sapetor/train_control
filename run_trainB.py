@@ -77,4 +77,6 @@ if __name__ == '__main__':
     dashboard.setup_callbacks()
 
     # Run on port 8051
-    dashboard.run(host='127.0.0.1', port=8051, debug=False, use_reloader=False)
+    # Use '0.0.0.0' to allow access from other computers on the network
+    # Use '127.0.0.1' for localhost-only access
+    dashboard.run(host='0.0.0.0', port=8051, debug=False, use_reloader=False)
