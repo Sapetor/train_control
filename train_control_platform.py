@@ -2064,6 +2064,38 @@ class TrainControlDashboard:
         except queue.Empty:
             return None
 
+    def auto_apply_saved_config(self):
+        """
+        Automatically apply saved network configuration on startup.
+        This ensures UDP receiver and MQTT are started without user interaction.
+        """
+        if self.network_manager.selected_ip:
+            print(f"[AUTO-CONFIG] Found saved configuration: {self.network_manager.selected_ip}")
+
+            # Start UDP receiver with saved configuration
+            self.udp_receiver.ip = self.network_manager.selected_ip
+            self.udp_receiver.port = self.network_manager.udp_port
+            success = self.udp_receiver.start()
+
+            if success:
+                print(f"[AUTO-CONFIG] UDP receiver started on {self.network_manager.selected_ip}:{self.network_manager.udp_port}")
+
+            # Start MQTT connection
+            mqtt_success = self.mqtt_sync.connect(
+                self.network_manager.selected_ip,
+                self.network_manager.mqtt_port
+            )
+
+            if mqtt_success:
+                print(f"[AUTO-CONFIG] MQTT connected to {self.network_manager.selected_ip}:{self.network_manager.mqtt_port}")
+
+            if success and mqtt_success:
+                print(f"[AUTO-CONFIG] ✓ Auto-configuration complete!")
+            else:
+                print(f"[AUTO-CONFIG] ⚠ Auto-configuration partial (UDP: {success}, MQTT: {mqtt_success})")
+        else:
+            print("[AUTO-CONFIG] No saved configuration found")
+
     def setup_layout(self):
         """Setup the dashboard layout"""
         # Debug output (commented out to reduce spam)

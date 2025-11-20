@@ -117,6 +117,9 @@ class MultiTrainApp:
                 # NOW create the layout after all configuration is set
                 dashboard.setup_layout()
 
+                # Auto-apply saved network configuration to start UDP and MQTT
+                dashboard.auto_apply_saved_config()
+
                 # Only register callbacks for the FIRST train to avoid conflicts
                 # All trains share the same app, so one set of callbacks handles all
                 if len(self.train_dashboards) == 0:
