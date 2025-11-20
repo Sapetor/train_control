@@ -67,6 +67,10 @@ if __name__ == '__main__':
 
     # NOW create layout and callbacks with correct train config
     dashboard.setup_layout()
+
+    # Assign layout to app (needed because train_config is set)
+    dashboard.app.layout = dashboard.layout
+
     dashboard.setup_callbacks()
 
     # Run on port 8051
