@@ -1521,10 +1521,11 @@ class TrainControlDashboard:
 
         # Setup message queue for push notifications
         self.websocket_messages = queue.Queue(maxsize=100)
-        
+
         # Connect callback to data sources
         self.data_manager.websocket_callback = self._push_websocket_message
-        self.mqtt_sync.websocket_callback = self._push_websocket_message
+        if self.mqtt_sync:  # Only if already initialized (single-train mode)
+            self.mqtt_sync.websocket_callback = self._push_websocket_message
         self.step_data_manager.websocket_callback = self._push_websocket_message
 
         # Modern color scheme
@@ -2076,6 +2077,9 @@ class TrainControlDashboard:
 
         self.mqtt_sync = MQTTParameterSync(mqtt_topics=mqtt_topics)
         self.mqtt_sync.on_params_updated = self._on_params_confirmed
+
+        # Set websocket callback for push notifications
+        self.mqtt_sync.websocket_callback = self._push_websocket_message
 
         if self.train_config:
             print(f"[MQTT INIT] Initialized MQTT sync for {self.train_config.id} with topics: {self.mqtt_topics.get('sync', 'N/A')}")
