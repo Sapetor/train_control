@@ -117,6 +117,9 @@ class MultiTrainApp:
                 # Generate and store train-specific MQTT topics
                 dashboard.mqtt_topics = self._generate_train_topics(train_config.mqtt_prefix)
 
+                # Initialize MQTT sync with train-specific topics
+                dashboard._initialize_mqtt_sync()
+
                 # NOW create the layout after all configuration is set
                 dashboard.setup_layout()
 

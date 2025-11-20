@@ -1139,10 +1139,9 @@ class TrainControlDashboard:
 
 
 
-        # Initialize MQTT parameter sync with train-specific topics
-        # Use self.mqtt_topics if set by multi_train_wrapper, else use global MQTT_TOPICS
-        mqtt_topics = getattr(self, 'mqtt_topics', None) or MQTT_TOPICS
-        self.mqtt_sync = MQTTParameterSync(mqtt_topics=mqtt_topics)
+        # Initialize MQTT parameter sync
+        # In multi-train mode with skip_setup=True, defer initialization until mqtt_topics is set
+        self.mqtt_sync = None
         self.confirmed_params = {
             'kp': 0.0,
             'ki': 0.0,
@@ -1150,8 +1149,9 @@ class TrainControlDashboard:
             'reference': 10.0
         }
 
-        # Set up callback for when parameters are confirmed by Arduino
-        self.mqtt_sync.on_params_updated = self._on_params_confirmed
+        # Initialize MQTT sync now if not skipping setup
+        if not skip_setup:
+            self._initialize_mqtt_sync()
 
         # Store zoom state to preserve user zoom when data updates (separate for each graph)
         self.zoom_state = {
@@ -2064,6 +2064,24 @@ class TrainControlDashboard:
         except queue.Empty:
             return None
 
+    def _initialize_mqtt_sync(self):
+        """
+        Initialize MQTT parameter sync with correct topics.
+
+        In multi-train mode, this is called AFTER mqtt_topics is set by multi_train_wrapper.
+        In single-train mode, this is called immediately in __init__.
+        """
+        # Use self.mqtt_topics if set (multi-train), else use global MQTT_TOPICS (single-train)
+        mqtt_topics = self.mqtt_topics if self.mqtt_topics else MQTT_TOPICS
+
+        self.mqtt_sync = MQTTParameterSync(mqtt_topics=mqtt_topics)
+        self.mqtt_sync.on_params_updated = self._on_params_confirmed
+
+        if self.train_config:
+            print(f"[MQTT INIT] Initialized MQTT sync for {self.train_config.id} with topics: {self.mqtt_topics.get('sync', 'N/A')}")
+        else:
+            print(f"[MQTT INIT] Initialized MQTT sync with global topics")
+
     def auto_apply_saved_config(self):
         """
         Automatically apply saved network configuration on startup.
@@ -2072,13 +2090,21 @@ class TrainControlDashboard:
         if self.network_manager.selected_ip:
             print(f"[AUTO-CONFIG] Found saved configuration: {self.network_manager.selected_ip}")
 
+            # Determine which UDP port to use
+            if self.train_config:
+                # Multi-train mode: use train-specific port
+                udp_port = self.train_config.udp_port
+            else:
+                # Single-train mode: use global network manager port
+                udp_port = self.network_manager.udp_port
+
             # Start UDP receiver with saved configuration
             self.udp_receiver.ip = self.network_manager.selected_ip
-            self.udp_receiver.port = self.network_manager.udp_port
+            self.udp_receiver.port = udp_port
             success = self.udp_receiver.start()
 
             if success:
-                print(f"[AUTO-CONFIG] UDP receiver started on {self.network_manager.selected_ip}:{self.network_manager.udp_port}")
+                print(f"[AUTO-CONFIG] UDP receiver started on {self.network_manager.selected_ip}:{udp_port}")
 
             # Start MQTT connection
             mqtt_success = self.mqtt_sync.connect(
