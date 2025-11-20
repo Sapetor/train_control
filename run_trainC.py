@@ -65,6 +65,9 @@ if __name__ == '__main__':
     # Initialize MQTT with train-specific topics
     dashboard._initialize_mqtt_sync()
 
+    # Set correct UDP port for this train
+    udp_receiver.port = train_config.udp_port
+
     # NOW create layout and callbacks with correct train config
     dashboard.setup_layout()
 
