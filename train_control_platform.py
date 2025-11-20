@@ -38,6 +38,7 @@ import json
 import uuid
 from dataclasses import dataclass
 from typing import Dict, Optional
+import logging
 
 # =============================================================================
 # Configuration Constants
@@ -1513,6 +1514,10 @@ class TrainControlDashboard:
         else:
             self.app = dash.Dash(__name__, external_stylesheets=external_stylesheets,
                                 suppress_callback_exceptions=True)
+
+        # Disable Flask request logging to reduce console spam
+        log = logging.getLogger('werkzeug')
+        log.setLevel(logging.ERROR)
 
         # Setup message queue for push notifications
         self.websocket_messages = queue.Queue(maxsize=100)
