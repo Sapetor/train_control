@@ -773,7 +773,9 @@ void loop_deadband_experiment() {
 
   send_udp_deadband_data();
 
-  if (distance_change >= motion_threshold && MotorSpeed > 50) {
+  // Detect motion when distance change exceeds threshold
+  // Small PWM threshold (>10) to avoid false positives from sensor noise at very low PWM
+  if (distance_change >= motion_threshold && MotorSpeed > 10) {
     motion_detected = true;
     calibrated_deadband = MotorSpeed;
 
