@@ -116,7 +116,12 @@ class MultiTrainApp:
 
                 # NOW create the layout after all configuration is set
                 dashboard.setup_layout()
-                dashboard.setup_callbacks()
+
+                # Only register callbacks for the FIRST train to avoid conflicts
+                # All trains share the same app, so one set of callbacks handles all
+                if len(self.train_dashboards) == 0:
+                    dashboard.setup_callbacks()
+                    print(f"[MULTI-TRAIN] Callbacks registered for shared app")
 
                 self.train_dashboards[train_id] = dashboard
 
