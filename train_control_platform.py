@@ -1567,6 +1567,33 @@ class TrainControlDashboard:
             return f"{self.train_config.id}-{component_id}"
         return component_id
 
+    def _get_base_id(self, component_id):
+        """
+        Extract base component ID from potentially prefixed ID.
+
+        In callbacks, trigger IDs will be prefixed in multi-train mode. This method
+        extracts the base ID for comparison.
+
+        Args:
+            component_id: Component ID that may have train prefix (e.g., 'trainA-kp-input')
+
+        Returns:
+            str: Base ID without train prefix (e.g., 'kp-input')
+
+        Example:
+            # Single-train mode:
+            self._get_base_id('kp-input') → 'kp-input'
+
+            # Multi-train mode (train_config.id = 'trainA'):
+            self._get_base_id('trainA-kp-input') → 'kp-input'
+            self._get_base_id('kp-input') → 'kp-input'  # handles unprefixed too
+        """
+        if self.train_config and hasattr(self.train_config, 'id'):
+            prefix = f"{self.train_config.id}-"
+            if component_id.startswith(prefix):
+                return component_id[len(prefix):]
+        return component_id
+
     def _get_csv_glob_pattern(self, experiment_type='pid'):
         """
         Get CSV glob pattern based on train_id and experiment type.
@@ -2897,8 +2924,9 @@ class TrainControlDashboard:
 
             if ctx.triggered:
                 trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
+                base_id = self._get_base_id(trigger_id)
 
-                if trigger_id == 'refresh-interfaces-btn':
+                if base_id == 'refresh-interfaces-btn':
                     self.network_manager.detect_interfaces()
                     # Preserve current selection if available
                     current_ip = self.network_manager.selected_ip
@@ -2906,7 +2934,7 @@ class TrainControlDashboard:
                         return current_ip, f"{self.t('selected')}: {current_ip}", self.t('interfaces_refreshed')
                     return self.t('select_an_interface'), self.t('interfaces_refreshed'), self.t('network_interfaces_updated')
 
-                elif trigger_id == 'apply-config-btn' and selected_ip:
+                elif base_id == 'apply-config-btn' and selected_ip:
                     # Apply configuration
                     self.network_manager.set_selected_ip(selected_ip)
                     self.network_manager.update_ports(udp_port, mqtt_port)
@@ -2963,9 +2991,10 @@ class TrainControlDashboard:
             ctx = callback_context
             if ctx.triggered:
                 trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
-                if trigger_id == 'refresh-interfaces-btn':
+                base_id = self._get_base_id(trigger_id)
+                if base_id == 'refresh-interfaces-btn':
                     print("[CALLBACK] Refresh button clicked, re-detecting...")
-                elif trigger_id == 'page-load-trigger':
+                elif base_id == 'page-load-trigger':
                     print("[CALLBACK] Page loaded, populating dropdown...")
                 else:
                     print(f"[CALLBACK] Tab changed to {tab_value}, updating dropdown...")
@@ -3002,8 +3031,9 @@ class TrainControlDashboard:
 
             if ctx.triggered:
                 trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
+                base_id = self._get_base_id(trigger_id)
 
-                if trigger_id == 'start-experiment-btn' and start_clicks:
+                if base_id == 'start-experiment-btn' and start_clicks:
                     if self.network_manager.selected_ip:
                         # Determine which experiment mode based on active tab
                         if self.experiment_mode == 'step':
@@ -3061,7 +3091,7 @@ class TrainControlDashboard:
                     else:
                         return html.Div(self.t('configure_network_warning'), style={'color': self.colors['danger']})
 
-                elif trigger_id == 'stop-experiment-btn' and stop_clicks:
+                elif base_id == 'stop-experiment-btn' and stop_clicks:
                     if self.experiment_mode == 'step':
                         self.step_data_manager.stop_experiment()
                         publish.single(self.get_topic('step_sync'), 'False', hostname=self.network_manager.mqtt_broker_ip)
@@ -3099,23 +3129,24 @@ class TrainControlDashboard:
             # Determine which control was used based on what triggered the callback
             if ctx.triggered:
                 trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
+                base_id = self._get_base_id(trigger_id)
 
                 # Handle different triggers: sliders vs send buttons
-                if trigger_id == 'kp-slider':
+                if base_id == 'kp-slider':
                     kp, ki, kd, reference = kp_slider, ki_slider, kd_slider, ref_slider
-                elif trigger_id == 'kp-send-btn':
+                elif base_id == 'kp-send-btn':
                     kp, ki, kd, reference = kp_input if kp_input is not None else kp_slider, ki_slider, kd_slider, ref_slider
-                elif trigger_id == 'ki-slider':
+                elif base_id == 'ki-slider':
                     kp, ki, kd, reference = kp_slider, ki_slider, kd_slider, ref_slider
-                elif trigger_id == 'ki-send-btn':
+                elif base_id == 'ki-send-btn':
                     kp, ki, kd, reference = kp_slider, ki_input if ki_input is not None else ki_slider, kd_slider, ref_slider
-                elif trigger_id == 'kd-slider':
+                elif base_id == 'kd-slider':
                     kp, ki, kd, reference = kp_slider, ki_slider, kd_slider, ref_slider
-                elif trigger_id == 'kd-send-btn':
+                elif base_id == 'kd-send-btn':
                     kp, ki, kd, reference = kp_slider, ki_slider, kd_input if kd_input is not None else kd_slider, ref_slider
-                elif trigger_id == 'reference-slider':
+                elif base_id == 'reference-slider':
                     kp, ki, kd, reference = kp_slider, ki_slider, kd_slider, ref_slider
-                elif trigger_id == 'ref-send-btn':
+                elif base_id == 'ref-send-btn':
                     kp, ki, kd, reference = kp_slider, ki_slider, kd_slider, ref_input if ref_input is not None else ref_slider
                 else:
                     # Default to slider values
@@ -3167,7 +3198,8 @@ class TrainControlDashboard:
             ctx = callback_context
             if ctx.triggered:
                 trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
-                if trigger_id == 'realtime-graph':
+                base_id = self._get_base_id(trigger_id)
+                if base_id == 'realtime-graph':
                     self._handle_zoom_state('realtime-graph', relayout_data)
 
             return self._create_data_graph('realtime-graph')
@@ -3312,7 +3344,8 @@ class TrainControlDashboard:
             ctx = callback_context
             if ctx.triggered:
                 trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
-                if trigger_id == 'historical-graph':
+                base_id = self._get_base_id(trigger_id)
+                if base_id == 'historical-graph':
                     self._handle_zoom_state('historical-graph', relayout_data)
 
             return self._create_data_graph('historical-graph', title_prefix="Historical: ")
@@ -3416,38 +3449,39 @@ class TrainControlDashboard:
                                   vbatt, direction, mqtt_intervals, 
                                   amp_input, dur_input):
             ctx = callback_context
-            
+
             if ctx.triggered:
                 trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
+                base_id = self._get_base_id(trigger_id)
 
                 # Only log actual parameter changes, not refresh intervals
-                if trigger_id != 'mqtt-status-refresh':
+                if base_id != 'mqtt-status-refresh':
                     print(f"[STEP PARAM] Callback triggered by: {trigger_id}")
 
                 # Send MQTT updates
                 if self.network_manager.selected_ip:
                     try:
-                        if trigger_id == 'amplitude-slider':
+                        if base_id == 'amplitude-slider':
                             publish.single(self.get_topic('step_amplitude'), str(amp_slider),
                                          hostname=self.network_manager.mqtt_broker_ip)
                             print(f"[STEP PARAM] Sent amplitude = {amp_slider}")
-                        elif trigger_id == 'amplitude-send-btn' and amp_input is not None:
+                        elif base_id == 'amplitude-send-btn' and amp_input is not None:
                             publish.single(self.get_topic('step_amplitude'), str(amp_input),
                                          hostname=self.network_manager.mqtt_broker_ip)
                             print(f"[STEP PARAM] Sent amplitude = {amp_input}")
-                        elif trigger_id == 'duration-slider':
+                        elif base_id == 'duration-slider':
                             publish.single(self.get_topic('step_time'), str(dur_slider),
                                          hostname=self.network_manager.mqtt_broker_ip)
                             print(f"[STEP PARAM] Sent time = {dur_slider}")
-                        elif trigger_id == 'duration-send-btn' and dur_input is not None:
+                        elif base_id == 'duration-send-btn' and dur_input is not None:
                             publish.single(self.get_topic('step_time'), str(dur_input),
                                          hostname=self.network_manager.mqtt_broker_ip)
                             print(f"[STEP PARAM] Sent time = {dur_input}")
-                        elif trigger_id == 'vbatt-slider':
+                        elif base_id == 'vbatt-slider':
                             publish.single(self.get_topic('step_vbatt'), str(vbatt),
                                          hostname=self.network_manager.mqtt_broker_ip)
                             print(f"[STEP PARAM] Sent vbatt = {vbatt}")
-                        elif trigger_id == 'direction-radio':
+                        elif base_id == 'direction-radio':
                             publish.single(self.get_topic('step_direction'), direction,
                                          hostname=self.network_manager.mqtt_broker_ip)
                             print(f"[STEP PARAM] Sent direction = {direction}")
@@ -3574,17 +3608,18 @@ class TrainControlDashboard:
         
             if not ctx.triggered:
                 raise PreventUpdate
-        
+
             trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
-        
+            base_id = self._get_base_id(trigger_id)
+
             # Check network configuration
             if not self.network_manager.selected_ip:
                 return (html.Div(self.t('configure_network_warning'),
                                 style={'color': '#DC3545'}),
                         "", True)
-        
+
             # Start calibration
-            if trigger_id == 'deadband-start-btn' and start_clicks > 0:
+            if base_id == 'deadband-start-btn' and start_clicks > 0:
                 try:
                     print(f"[DEADBAND] Start button clicked. Network config:")
                     print(f"  - Selected IP: {self.network_manager.selected_ip}")
@@ -3626,9 +3661,9 @@ class TrainControlDashboard:
                 except Exception as e:
                     return (html.Div(f"Error: {str(e)}", style={'color': '#DC3545'}),
                             "", True)
-        
+
             # Stop calibration
-            elif trigger_id == 'deadband-stop-btn' and stop_clicks > 0:
+            elif base_id == 'deadband-stop-btn' and stop_clicks > 0:
                 try:
                     print(f"[DEADBAND] Sending sync=False to {self.get_topic('deadband_sync')} @ {self.network_manager.mqtt_broker_ip}")
                     publish.single(self.get_topic('deadband_sync'), "False",
@@ -3643,9 +3678,9 @@ class TrainControlDashboard:
                 except Exception as e:
                     return (html.Div(f"Error: {str(e)}", style={'color': '#DC3545'}),
                             "", True)
-        
+
             # Status updates (check for calibration result)
-            elif trigger_id == 'graph-update-interval':
+            elif base_id == 'graph-update-interval':
                 # Check if calibration has completed
                 if self.deadband_data_manager.calibrated_deadband > 0:
                     return (html.Div(self.t('calibration_complete'),
