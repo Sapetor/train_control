@@ -138,7 +138,7 @@ int SampleTime = 50;
 int umin = -1024, umax = 1024;
 int t_envio = 50;
 double etha = 0.5;
-int deadband = 300;
+int deadband = 50;  // Low default - calibrate if needed
 int lim = 10;
 double ponderado = 0;
 bool flag_pid = true;
