@@ -144,6 +144,9 @@ double ponderado = 0;
 bool flag_pid = true;
 uint32_t tiempo_inicial_pid = 0;
 bool pid_params_changed = false;
+// Sensor warm-up for PID mode
+const int PID_WARMUP_SAMPLES = 5;  // Discard first N samples for sensor stabilization
+int pidWarmupCounter = 0;          // Counts warm-up samples (discarded)
 
 PID myPID(&error_distancia, &u_distancia, &rf, Kp, Ki, Kd, DIRECT);
 
@@ -152,14 +155,18 @@ PID myPID(&error_distancia, &u_distancia, &rf, Kp, Ki, Kd, DIRECT);
 // =============================================================================
 double v_batt = 8.4;
 double StepAmplitude = 0;
-uint32_t StepTime = 0;
+uint32_t StepTime = 0;           // Absolute end time (modified during experiment)
+uint32_t StepTimeDuration = 0;   // Original duration in ms (for status publishing)
 uint32_t delta = 0;
 uint32_t tiempo_inicial_step = 0;
 bool flag_step = true;
 double u_step;
-int stepSampleCounter = 0;
-const int STEP_DELAY_SAMPLES = 2;
-double appliedStepValue = 0.0;
+// Sensor warm-up and baseline sampling for step response
+const int STEP_WARMUP_SAMPLES = 5;    // Discard first N samples (sensor initialization)
+const int STEP_BASELINE_SAMPLES = 3;  // Baseline samples after warm-up (motor off)
+int stepWarmupCounter = 0;            // Counts warm-up samples (discarded)
+int stepBaselineCounter = 0;          // Counts baseline samples (recorded)
+double appliedStepValue = 0.0;        // Actual step value being applied
 
 // =============================================================================
 // Deadband Calibration Mode Variables
@@ -622,8 +629,11 @@ void loop_pid_experiment() {
   if (flag_pid == false) {
     flag_pid = true;
     tiempo_inicial_pid = millis();
+    pidWarmupCounter = 0;  // Reset warm-up counter
     Serial.println("[PID] Experiment started!");
-    myPID.SetMode(AUTOMATIC);
+    Serial.print("  Sensor warm-up: "); Serial.print(PID_WARMUP_SAMPLES); Serial.println(" samples (stabilizing...)");
+    // DON'T set PID to AUTOMATIC yet - wait until after warm-up
+    myPID.SetMode(MANUAL);  // Keep PID in manual mode during warm-up
     PIDMotorDirection = 1;
   }
 
@@ -637,6 +647,23 @@ void loop_pid_experiment() {
   }
 
   read_ToF_sensor();
+
+  // SENSOR WARM-UP: Discard first N readings to let sensor stabilize
+  if (pidWarmupCounter < PID_WARMUP_SAMPLES) {
+    pidWarmupCounter++;
+    MotorSpeed = 0;
+    MotorDirection = PIDMotorDirection;
+    SetMotorControl();
+    // Don't run PID, don't send UDP data during warm-up
+    if (pidWarmupCounter == PID_WARMUP_SAMPLES) {
+      Serial.println("[PID] Sensor warm-up complete, starting control loop...");
+      // NOW activate PID with fresh sensor readings
+      myPID.SetMode(AUTOMATIC);
+    }
+    delay(SampleTime);
+    return;  // Skip PID computation and UDP send during warm-up
+  }
+
   distancia = medi;
   error_distancia = x_ref - distancia;
   myPID.Compute();
@@ -686,27 +713,49 @@ void loop_step_experiment() {
     flag_step = true;
     Serial.println("[STEP] Experiment started!");
     Serial.print("  Amplitude: "); Serial.print(StepAmplitude); Serial.println("V");
-    Serial.print("  Duration: "); Serial.print(StepTime / 1000.0); Serial.println("s");
+    Serial.print("  Duration: "); Serial.print(StepTimeDuration / 1000.0); Serial.println("s");
     Serial.print("  Direction: "); Serial.println(StepMotorDirection ? "Forward" : "Reverse");
 
     delta = millis() - tiempo_inicial_step;
-    StepTime = StepTime + millis();
+    // Calculate end time using saved duration (not current StepTime which gets modified)
+    StepTime = tiempo_inicial_step + StepTimeDuration;
 
-    stepSampleCounter = 0;
+    // Reset counters and applied value
+    stepWarmupCounter = 0;
+    stepBaselineCounter = 0;
     appliedStepValue = 0.0;
-    Serial.print("  Waiting for "); Serial.print(STEP_DELAY_SAMPLES); Serial.println(" baseline samples before applying step...");
+    Serial.print("  Sensor warm-up: "); Serial.print(STEP_WARMUP_SAMPLES); Serial.println(" samples (discarded)");
+    Serial.print("  Baseline: "); Serial.print(STEP_BASELINE_SAMPLES); Serial.println(" samples (motor off)");
   }
 
   read_ToF_sensor();
 
-  if (stepSampleCounter < STEP_DELAY_SAMPLES) {
-    appliedStepValue = 0.0;
+  // Three-phase approach: WARMUP -> BASELINE -> STEP APPLIED
+  if (stepWarmupCounter < STEP_WARMUP_SAMPLES) {
+    // PHASE 1: WARMUP - Discard samples to let sensor stabilize
+    stepWarmupCounter++;
     MotorSpeed = 0;
-    stepSampleCounter++;
-    if (stepSampleCounter == STEP_DELAY_SAMPLES) {
-      Serial.println("[STEP] Baseline samples collected, applying step now!");
+    appliedStepValue = 0.0;
+    MotorDirection = StepMotorDirection;
+    SetMotorControl();
+    // DON'T send UDP data during warm-up (sensor readings unstable)
+    if (stepWarmupCounter == STEP_WARMUP_SAMPLES) {
+      Serial.println("[STEP] Sensor warm-up complete, collecting baseline...");
     }
-  } else {
+    delay(21);
+    return;  // Skip UDP send during warm-up
+  }
+  else if (stepBaselineCounter < STEP_BASELINE_SAMPLES) {
+    // PHASE 2: BASELINE - Motor off, record stable baseline readings
+    stepBaselineCounter++;
+    MotorSpeed = 0;
+    appliedStepValue = 0.0;
+    if (stepBaselineCounter == STEP_BASELINE_SAMPLES) {
+      Serial.println("[STEP] Baseline collected, applying step now!");
+    }
+  }
+  else {
+    // PHASE 3: STEP APPLIED - Apply step input and record response
     appliedStepValue = StepAmplitude;
     u_step = StepAmplitude * 1024 / v_batt;
     MotorSpeed = constrain(u_step, 0, 1024);
@@ -719,8 +768,9 @@ void loop_step_experiment() {
   if (millis() >= StepTime) {
     Serial.println("[STEP] Experiment duration complete");
     flag_step = true;
-    StepTime = 0;
-    StepAmplitude = 0;
+    // Don't reset parameters when experiment completes - keep them for next experiment
+    // StepTime = 0;
+    // StepAmplitude = 0;
     experimentActive = false;
     MotorSpeed = 0;
     SetMotorControl();
@@ -774,8 +824,8 @@ void loop_deadband_experiment() {
   send_udp_deadband_data();
 
   // Detect motion when distance change exceeds threshold
-  // Small PWM threshold (>10) to avoid false positives from sensor noise at very low PWM
-  if (distance_change >= motion_threshold && MotorSpeed > 10) {
+  // PWM threshold (>50) to avoid false positives from sensor noise at very low PWM
+  if (distance_change >= motion_threshold && MotorSpeed > 50) {
     motion_detected = true;
     calibrated_deadband = MotorSpeed;
 
@@ -912,7 +962,7 @@ void mqtt_callback(char* topic, byte* payload, unsigned int length) {
   // Step Response Topics (DYNAMIC)
   // =========================================================================
   if (topic_str == mqtt_prefix + "/step/sync") {
-    if (mensaje == "True" && StepTime > 0 && StepAmplitude > 0) {
+    if (mensaje == "True" && StepTimeDuration > 0 && StepAmplitude > 0) {
       currentExperimentMode = STEP_MODE;
       experimentActive = true;
       flag_step = false;
@@ -935,8 +985,8 @@ void mqtt_callback(char* topic, byte* payload, unsigned int length) {
   }
   else if (topic_str == mqtt_prefix + "/step/time") {
     float time_seconds = mensaje.toFloat();
-    StepTime = time_seconds * 1000;
-    StepTime = constrain(StepTime, 0, 20000);
+    StepTimeDuration = time_seconds * 1000;  // Save original duration
+    StepTimeDuration = constrain(StepTimeDuration, 0, 20000);
     client.publish((mqtt_prefix + "/step/time/status").c_str(), String(time_seconds, 1).c_str());
   }
   else if (topic_str == mqtt_prefix + "/step/direction") {
@@ -951,7 +1001,7 @@ void mqtt_callback(char* topic, byte* payload, unsigned int length) {
   }
   else if (topic_str == mqtt_prefix + "/step/request_params") {
     client.publish((mqtt_prefix + "/step/amplitude/status").c_str(), String(StepAmplitude, 1).c_str());
-    client.publish((mqtt_prefix + "/step/time/status").c_str(), String(StepTime / 1000.0, 1).c_str());
+    client.publish((mqtt_prefix + "/step/time/status").c_str(), String(StepTimeDuration / 1000.0, 1).c_str());
     client.publish((mqtt_prefix + "/step/direction/status").c_str(), String(StepMotorDirection).c_str());
     client.publish((mqtt_prefix + "/step/vbatt/status").c_str(), String(v_batt, 1).c_str());
   }
