@@ -1133,12 +1133,14 @@ void mqtt_callback(char* topic, byte* payload, unsigned int length) {
 void setup_wifi() {
   Serial.print("Connecting to WiFi: ");
   Serial.println(configured_wifi_ssid);
+  Serial.println("(Serial commands still work during connection)");
 
   WiFi.mode(WIFI_STA);
   esp_wifi_set_ps(WIFI_PS_NONE);
   WiFi.begin(configured_wifi_ssid.c_str(), configured_wifi_password.c_str());
 
   while (WiFi.status() != WL_CONNECTED) {
+    checkSerialConfig();  // Allow serial commands while connecting
     delay(500);
     Serial.print(".");
   }
@@ -1157,6 +1159,9 @@ void setup_wifi() {
 // =============================================================================
 void reconnect_mqtt() {
   while (!client.connected()) {
+    // Check for serial commands while waiting for MQTT
+    checkSerialConfig();
+
     Serial.print("Attempting MQTT connection...");
 
     if (client.connect(carro.c_str())) {
@@ -1189,8 +1194,12 @@ void reconnect_mqtt() {
     } else {
       Serial.print(" failed, rc=");
       Serial.print(client.state());
-      Serial.println(" - retrying in 5 seconds");
-      delay(5000);
+      Serial.println(" - retrying in 5 seconds (serial commands still work)");
+      // Check serial during the 5-second wait
+      for (int i = 0; i < 50; i++) {
+        checkSerialConfig();
+        delay(100);
+      }
     }
   }
 }
