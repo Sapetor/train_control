@@ -182,6 +182,19 @@ int max_pwm_test = 800;
 bool motion_detected = false;
 int Frequency = 100;
 
+// Improved motion detection with sliding baseline
+const int DEADBAND_BASELINE_SAMPLES = 20;  // Samples to establish baseline noise
+const int DEADBAND_SLIDING_WINDOW = 5;     // Sliding window size for detection
+double baseline_readings[20];              // Store baseline readings
+double sliding_window[5];                  // Recent readings for motion detection
+int baseline_count = 0;
+int sliding_idx = 0;
+double baseline_mean = 0;
+double baseline_noise = 0;                 // Measured noise level (std dev)
+bool baseline_established = false;
+int consecutive_motion_count = 0;          // Count consecutive motion detections
+const int MOTION_CONFIRM_COUNT = 3;        // Require N consecutive detections
+
 // =============================================================================
 // Configuration Mode Functions (NEW)
 // =============================================================================
@@ -790,28 +803,24 @@ void loop_deadband_experiment() {
     Serial.print("  Direction: "); Serial.println(DeadbandMotorDirection ? "Forward" : "Reverse");
     Serial.print("  Motion threshold: "); Serial.print(motion_threshold); Serial.println(" cm");
 
-    double sum = 0;
-    for (int i = 0; i < 10; i++) {
-      read_ToF_sensor();
-      sum += medi;
-      delay(20);
-    }
-    initial_distance = sum / 10.0;
-
+    // Reset state for new calibration
     MotorSpeed = 0;
     calibrated_deadband = 0;
     motion_detected = false;
+    baseline_established = false;
+    baseline_count = 0;
+    sliding_idx = 0;
+    consecutive_motion_count = 0;
+    baseline_mean = 0;
+    baseline_noise = 0;
 
     ledcAttach(Control_v, Frequency, 10);
+    SetMotorControl();
 
-    Serial.print("  Initial distance (averaged): "); Serial.print(initial_distance); Serial.println(" cm");
-    Serial.println("  Increasing PWM from 0 until motion detected...");
+    Serial.println("  Phase 1: Establishing baseline noise (motor off)...");
   }
 
-  MotorSpeed += pwm_increment;
-  MotorDirection = DeadbandMotorDirection;
-  SetMotorControl();
-
+  // Read current distance (average of 3 readings)
   double sum = 0;
   for (int i = 0; i < 3; i++) {
     read_ToF_sensor();
@@ -819,45 +828,111 @@ void loop_deadband_experiment() {
     delay(5);
   }
   double current_distance = sum / 3.0;
-  double distance_change = abs(current_distance - initial_distance);
+
+  // PHASE 1: Establish baseline noise level (motor still off)
+  if (!baseline_established) {
+    baseline_readings[baseline_count] = current_distance;
+    baseline_count++;
+
+    if (baseline_count >= DEADBAND_BASELINE_SAMPLES) {
+      // Calculate mean
+      double total = 0;
+      for (int i = 0; i < DEADBAND_BASELINE_SAMPLES; i++) {
+        total += baseline_readings[i];
+      }
+      baseline_mean = total / DEADBAND_BASELINE_SAMPLES;
+
+      // Calculate standard deviation (noise level)
+      double variance = 0;
+      for (int i = 0; i < DEADBAND_BASELINE_SAMPLES; i++) {
+        double diff = baseline_readings[i] - baseline_mean;
+        variance += diff * diff;
+      }
+      baseline_noise = sqrt(variance / DEADBAND_BASELINE_SAMPLES);
+
+      // Initialize sliding window with baseline mean
+      for (int i = 0; i < DEADBAND_SLIDING_WINDOW; i++) {
+        sliding_window[i] = baseline_mean;
+      }
+
+      initial_distance = baseline_mean;
+      baseline_established = true;
+
+      Serial.print("  Baseline mean: "); Serial.print(baseline_mean, 2); Serial.println(" cm");
+      Serial.print("  Baseline noise (std): "); Serial.print(baseline_noise, 3); Serial.println(" cm");
+      Serial.print("  Detection threshold: "); Serial.print(motion_threshold); Serial.println(" cm");
+      Serial.println("  Phase 2: Ramping PWM until motion detected...");
+    }
+    delay(30);
+    return;
+  }
+
+  // PHASE 2: Ramp PWM and detect motion
+  MotorSpeed += pwm_increment;
+  MotorDirection = DeadbandMotorDirection;
+  SetMotorControl();
+
+  // Update sliding window
+  sliding_window[sliding_idx] = current_distance;
+  sliding_idx = (sliding_idx + 1) % DEADBAND_SLIDING_WINDOW;
+
+  // Calculate sliding average
+  double sliding_sum = 0;
+  for (int i = 0; i < DEADBAND_SLIDING_WINDOW; i++) {
+    sliding_sum += sliding_window[i];
+  }
+  double sliding_avg = sliding_sum / DEADBAND_SLIDING_WINDOW;
+
+  // Motion = sliding average deviates from baseline by more than threshold
+  double deviation = abs(sliding_avg - baseline_mean);
 
   send_udp_deadband_data();
 
-  // Detect motion when distance change exceeds threshold
-  // PWM threshold (>50) to avoid false positives from sensor noise at very low PWM
-  if (distance_change >= motion_threshold && MotorSpeed > 50) {
-    motion_detected = true;
-    calibrated_deadband = MotorSpeed;
+  // Check for motion: deviation exceeds threshold AND PWM > minimum
+  // Use max(motion_threshold, 3*noise) to be robust against noisy sensors
+  double effective_threshold = max(motion_threshold, 3.0 * baseline_noise);
 
-    Serial.println("========================================");
-    Serial.println("✓ MOTION DETECTED!");
-    Serial.print("  Deadband PWM: "); Serial.println(calibrated_deadband);
-    Serial.print("  Initial distance: "); Serial.print(initial_distance); Serial.println(" cm");
-    Serial.print("  Final distance: "); Serial.print(current_distance); Serial.println(" cm");
-    Serial.print("  Distance moved: "); Serial.print(distance_change); Serial.println(" cm");
-    Serial.println("========================================");
+  if (deviation >= effective_threshold && MotorSpeed > 50) {
+    consecutive_motion_count++;
 
-    send_udp_deadband_data();
-    delay(50);
+    if (consecutive_motion_count >= MOTION_CONFIRM_COUNT) {
+      // Confirmed motion!
+      motion_detected = true;
+      calibrated_deadband = MotorSpeed - (MOTION_CONFIRM_COUNT * pwm_increment);  // Subtract confirmations
 
-    MotorSpeed = 0;
-    SetMotorControl();
+      Serial.println("========================================");
+      Serial.println("✓ MOTION DETECTED!");
+      Serial.print("  Deadband PWM: "); Serial.println(calibrated_deadband);
+      Serial.print("  Baseline: "); Serial.print(baseline_mean, 2); Serial.println(" cm");
+      Serial.print("  Sliding avg: "); Serial.print(sliding_avg, 2); Serial.println(" cm");
+      Serial.print("  Deviation: "); Serial.print(deviation, 3); Serial.println(" cm");
+      Serial.print("  Noise level: "); Serial.print(baseline_noise, 3); Serial.println(" cm");
+      Serial.print("  Effective threshold: "); Serial.print(effective_threshold, 3); Serial.println(" cm");
+      Serial.println("========================================");
 
-    // Publish result with dynamic topic
-    String result_topic = mqtt_prefix + "/deadband/result";
-    client.publish(result_topic.c_str(), String(calibrated_deadband).c_str());
+      send_udp_deadband_data();
+      delay(50);
 
-    delay(1000);
-    experimentActive = false;
-    flag_deadband = true;
+      MotorSpeed = 0;
+      SetMotorControl();
 
-    return;
+      String result_topic = mqtt_prefix + "/deadband/result";
+      client.publish(result_topic.c_str(), String(calibrated_deadband).c_str());
+
+      delay(1000);
+      experimentActive = false;
+      flag_deadband = true;
+      return;
+    }
+  } else {
+    consecutive_motion_count = 0;  // Reset if not consistent
   }
 
   if (MotorSpeed % 50 == 0) {
     Serial.print("  PWM: "); Serial.print(MotorSpeed);
-    Serial.print(" - Distance: "); Serial.print(current_distance);
-    Serial.print(" cm (change: "); Serial.print(distance_change);
+    Serial.print(" - Sliding avg: "); Serial.print(sliding_avg, 2);
+    Serial.print(" cm, Deviation: "); Serial.print(deviation, 3);
+    Serial.print(" cm (thresh: "); Serial.print(effective_threshold, 3);
     Serial.println(" cm)");
   }
 
@@ -866,6 +941,8 @@ void loop_deadband_experiment() {
   if (MotorSpeed >= max_pwm_test) {
     Serial.println("========================================");
     Serial.println("⚠ WARNING: Reached maximum PWM without motion!");
+    Serial.print("  Final deviation: "); Serial.print(deviation, 3); Serial.println(" cm");
+    Serial.print("  Required threshold: "); Serial.print(effective_threshold, 3); Serial.println(" cm");
     Serial.println("========================================");
 
     calibrated_deadband = deadband;
