@@ -3229,16 +3229,17 @@ class TrainControlDashboard:
             if ctx.triggered:
                 try:
                     # Send MQTT only for sliders (immediate) and send buttons (on click)
-                    if trigger_id in ['kp-slider', 'kp-send-btn']:
+                    # Use base_id to handle both single-train and multi-train component IDs
+                    if base_id in ['kp-slider', 'kp-send-btn']:
                         print(f"[PID MQTT] Sending Kp={kp} to {self.get_topic('kp')} @ {self.network_manager.mqtt_broker_ip}")
                         publish.single(self.get_topic('kp'), kp, hostname=self.network_manager.mqtt_broker_ip)
-                    elif trigger_id in ['ki-slider', 'ki-send-btn']:
+                    elif base_id in ['ki-slider', 'ki-send-btn']:
                         print(f"[PID MQTT] Sending Ki={ki} to {self.get_topic('ki')} @ {self.network_manager.mqtt_broker_ip}")
                         publish.single(self.get_topic('ki'), ki, hostname=self.network_manager.mqtt_broker_ip)
-                    elif trigger_id in ['kd-slider', 'kd-send-btn']:
+                    elif base_id in ['kd-slider', 'kd-send-btn']:
                         print(f"[PID MQTT] Sending Kd={kd} to {self.get_topic('kd')} @ {self.network_manager.mqtt_broker_ip}")
                         publish.single(self.get_topic('kd'), kd, hostname=self.network_manager.mqtt_broker_ip)
-                    elif trigger_id in ['reference-slider', 'ref-send-btn']:
+                    elif base_id in ['reference-slider', 'ref-send-btn']:
                         print(f"[PID MQTT] Sending Ref={reference} to {self.get_topic('reference')} @ {self.network_manager.mqtt_broker_ip}")
                         publish.single(self.get_topic('reference'), reference, hostname=self.network_manager.mqtt_broker_ip)
 
